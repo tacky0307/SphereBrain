@@ -165,11 +165,14 @@ class SphereBrain:
             )
             for step_no, source, target, activation_value, weight_before in ordered_steps
         ]
+        ordered_unique_edges = list(dict.fromkeys(
+            tuple(sorted((step.from_node, step.to_node))) for step in path_steps
+        ))
 
         return SignalResult(
             source_nodes=sources,
             activated_nodes=sorted(activated_nodes),
-            traversed_edges=sorted(traversed_edges),
+            traversed_edges=ordered_unique_edges,
             activation_history=history,
             final_activation=activation.copy(),
             path_steps=path_steps,
