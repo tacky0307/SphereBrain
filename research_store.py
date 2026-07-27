@@ -9,7 +9,7 @@ import json
 import sqlite3
 import uuid
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 ENGINE_VERSION = "0.4.0"
 
 
@@ -95,6 +95,7 @@ class ResearchStore:
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_inputs_hash ON inputs(content_hash);
+                CREATE INDEX IF NOT EXISTS idx_inputs_raw ON inputs(raw_value, source);
 
                 CREATE TABLE IF NOT EXISTS trials (
                     trial_id TEXT PRIMARY KEY,
@@ -164,14 +165,8 @@ class ResearchStore:
                 (SCHEMA_VERSION, utc_now()),
             )
 
-    def create_experiment(
-        self,
-        name: str,
-        purpose: str,
-        hypothesis: str = "",
-        protocol_version: str = "1.0",
-        metadata: dict | None = None,
-    ) -> str:
+    def create_experiment(self, name: str, purpose: str, hypothesis: str = "",
+                          protocol_version: str = "1.0", metadata: dict | None = None) -> str:
         experiment_id = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
@@ -180,14 +175,8 @@ class ResearchStore:
             )
         return experiment_id
 
-    def start_session(
-        self,
-        experiment_id: str,
-        structure_version: str,
-        config_version: str,
-        random_seed: int | None = None,
-        metadata: dict | None = None,
-    ) -> str:
+    def start_session(self, experiment_id: str, structure_version: str, config_version: str,
+                      random_seed: int | None = None, metadata: dict | None = None) -> str:
         session_id = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
@@ -277,6 +266,71 @@ class ResearchStore:
                  utc_now(), canonical_json(parameters or {})),
             )
         return metric_id
+
+    def trial_path(self, trial_id: str) -> list[tuple[int, int]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT from_node, to_node FROM path_steps
+                   WHERE trial_id=? ORDER BY step_no, path_step_id""",
+                (trial_id,),
+            ).fetchall()
+        return [(int(row["from_node"]), int(row["to_node"])) for row in rows]
+
+    def repeated_input_comparison(self, raw_value: str, source: str = "input", limit: int = 10) -> dict:
+        """Compare completed trials for the same exact input.
+
+        Edge similarity is Jaccard similarity. Ordered similarity measures the
+        matching prefix ratio, showing whether early thought paths stabilize.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT t.trial_id, t.started_at
+                   FROM trials t JOIN inputs i ON i.input_id=t.input_id
+                   WHERE i.raw_value=? AND i.source=? AND t.status='completed'
+                   ORDER BY t.started_at DESC LIMIT ?""",
+                (raw_value, source, max(2, int(limit))),
+            ).fetchall()
+
+        trials = [{"trial_id": str(row["trial_id"]), "started_at": str(row["started_at"])} for row in reversed(rows)]
+        for trial in trials:
+            trial["path"] = self.trial_path(trial["trial_id"])
+            trial["unique_edges"] = sorted(set(trial["path"]))
+
+        comparisons = []
+        for previous, current in zip(trials, trials[1:]):
+            prev_edges = set(previous["unique_edges"])
+            curr_edges = set(current["unique_edges"])
+            union = prev_edges | curr_edges
+            shared = prev_edges & curr_edges
+            jaccard = len(shared) / len(union) if union else 1.0
+
+            prefix = 0
+            for old_step, new_step in zip(previous["path"], current["path"]):
+                if old_step != new_step:
+                    break
+                prefix += 1
+            prefix_base = max(1, min(len(previous["path"]), len(current["path"])))
+
+            comparisons.append({
+                "from_trial_id": previous["trial_id"],
+                "to_trial_id": current["trial_id"],
+                "shared_edges": len(shared),
+                "new_edges": len(curr_edges - prev_edges),
+                "lost_edges": len(prev_edges - curr_edges),
+                "edge_similarity": jaccard,
+                "matching_prefix_steps": prefix,
+                "ordered_similarity": prefix / prefix_base,
+            })
+
+        latest = comparisons[-1] if comparisons else None
+        return {
+            "input": raw_value,
+            "source": source,
+            "trial_count": len(trials),
+            "trials": trials,
+            "comparisons": comparisons,
+            "latest": latest,
+        }
 
     def summary(self) -> dict[str, int]:
         tables = ("experiments", "sessions", "inputs", "trials", "path_steps", "snapshots", "outputs", "metrics")
