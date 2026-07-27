@@ -9,7 +9,7 @@ import json
 import sqlite3
 import uuid
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.0.0"
 ENGINE_VERSION = "0.4.0"
 
 
@@ -33,12 +33,7 @@ class TrialHandle:
 
 
 class ResearchStore:
-    """Append-oriented research log for Sphere Brain.
-
-    Existing observations are never overwritten. New engine, structure and
-    analysis versions are recorded beside old data so future programs can
-    replay and compare earlier experiments.
-    """
+    """Append-oriented research log for Sphere Brain."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -61,7 +56,6 @@ class ResearchStore:
                     version TEXT PRIMARY KEY,
                     applied_at TEXT NOT NULL
                 );
-
                 CREATE TABLE IF NOT EXISTS experiments (
                     experiment_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -71,7 +65,6 @@ class ResearchStore:
                     created_at TEXT NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 );
-
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id TEXT PRIMARY KEY,
                     experiment_id TEXT NOT NULL REFERENCES experiments(experiment_id),
@@ -83,7 +76,6 @@ class ResearchStore:
                     random_seed INTEGER,
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 );
-
                 CREATE TABLE IF NOT EXISTS inputs (
                     input_id TEXT PRIMARY KEY,
                     input_type TEXT NOT NULL,
@@ -95,8 +87,6 @@ class ResearchStore:
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_inputs_hash ON inputs(content_hash);
-                CREATE INDEX IF NOT EXISTS idx_inputs_raw ON inputs(raw_value, source);
-
                 CREATE TABLE IF NOT EXISTS trials (
                     trial_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL REFERENCES sessions(session_id),
@@ -110,7 +100,6 @@ class ResearchStore:
                     error_text TEXT,
                     UNIQUE(session_id, sequence_no)
                 );
-
                 CREATE TABLE IF NOT EXISTS path_steps (
                     path_step_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     trial_id TEXT NOT NULL REFERENCES trials(trial_id),
@@ -127,7 +116,6 @@ class ResearchStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_path_trial ON path_steps(trial_id, step_no);
                 CREATE INDEX IF NOT EXISTS idx_path_edge ON path_steps(from_node, to_node);
-
                 CREATE TABLE IF NOT EXISTS snapshots (
                     snapshot_id TEXT PRIMARY KEY,
                     trial_id TEXT NOT NULL REFERENCES trials(trial_id),
@@ -137,7 +125,6 @@ class ResearchStore:
                     content_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
-
                 CREATE TABLE IF NOT EXISTS outputs (
                     output_id TEXT PRIMARY KEY,
                     trial_id TEXT NOT NULL REFERENCES trials(trial_id),
@@ -147,7 +134,6 @@ class ResearchStore:
                     created_at TEXT NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 );
-
                 CREATE TABLE IF NOT EXISTS metrics (
                     metric_id TEXT PRIMARY KEY,
                     trial_id TEXT NOT NULL REFERENCES trials(trial_id),
@@ -277,11 +263,6 @@ class ResearchStore:
         return [(int(row["from_node"]), int(row["to_node"])) for row in rows]
 
     def repeated_input_comparison(self, raw_value: str, source: str = "input", limit: int = 10) -> dict:
-        """Compare completed trials for the same exact input.
-
-        Edge similarity is Jaccard similarity. Ordered similarity measures the
-        matching prefix ratio, showing whether early thought paths stabilize.
-        """
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT t.trial_id, t.started_at
@@ -302,6 +283,8 @@ class ResearchStore:
             curr_edges = set(current["unique_edges"])
             union = prev_edges | curr_edges
             shared = prev_edges & curr_edges
+            new = curr_edges - prev_edges
+            lost = prev_edges - curr_edges
             jaccard = len(shared) / len(union) if union else 1.0
 
             prefix = 0
@@ -315,21 +298,23 @@ class ResearchStore:
                 "from_trial_id": previous["trial_id"],
                 "to_trial_id": current["trial_id"],
                 "shared_edges": len(shared),
-                "new_edges": len(curr_edges - prev_edges),
-                "lost_edges": len(prev_edges - curr_edges),
+                "new_edges": len(new),
+                "lost_edges": len(lost),
+                "shared_edge_list": sorted(shared),
+                "new_edge_list": sorted(new),
+                "lost_edge_list": sorted(lost),
                 "edge_similarity": jaccard,
                 "matching_prefix_steps": prefix,
                 "ordered_similarity": prefix / prefix_base,
             })
 
-        latest = comparisons[-1] if comparisons else None
         return {
             "input": raw_value,
             "source": source,
             "trial_count": len(trials),
             "trials": trials,
             "comparisons": comparisons,
-            "latest": latest,
+            "latest": comparisons[-1] if comparisons else None,
         }
 
     def summary(self) -> dict[str, int]:
