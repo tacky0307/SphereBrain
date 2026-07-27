@@ -317,6 +317,71 @@ class ResearchStore:
             "latest": comparisons[-1] if comparisons else None,
         }
 
+    def path_stabilization(self, raw_value: str, source: str = "input", limit: int = 20,
+                           stable_ratio: float = 0.75, minimum_trials: int = 3) -> dict:
+        """Measure which edges become persistent across repeated identical inputs.
+
+        occurrence_ratio shows how often an edge appeared in the observation window.
+        current_streak counts consecutive appearances ending at the latest trial.
+        """
+        comparison = self.repeated_input_comparison(raw_value, source=source, limit=max(2, limit))
+        trials = comparison["trials"]
+        trial_count = len(trials)
+        if trial_count == 0:
+            return {
+                "input": raw_value,
+                "source": source,
+                "trial_count": 0,
+                "stable_edges": [],
+                "edge_stats": [],
+                "stabilization_ratio": 0.0,
+            }
+
+        trial_edge_sets = [set(trial["unique_edges"]) for trial in trials]
+        all_edges = sorted(set().union(*trial_edge_sets)) if trial_edge_sets else []
+        edge_stats = []
+        for edge in all_edges:
+            appearances = [edge in edges for edges in trial_edge_sets]
+            occurrence_count = sum(appearances)
+            streak = 0
+            for appeared in reversed(appearances):
+                if not appeared:
+                    break
+                streak += 1
+            occurrence_ratio = occurrence_count / trial_count
+            stable = trial_count >= minimum_trials and occurrence_ratio >= stable_ratio
+            edge_stats.append({
+                "edge": edge,
+                "occurrence_count": occurrence_count,
+                "occurrence_ratio": occurrence_ratio,
+                "current_streak": streak,
+                "first_seen_trial": appearances.index(True) + 1,
+                "last_seen_trial": trial_count - list(reversed(appearances)).index(True),
+                "stable": stable,
+            })
+
+        edge_stats.sort(
+            key=lambda item: (item["stable"], item["occurrence_ratio"], item["current_streak"]),
+            reverse=True,
+        )
+        stable_edges = [item["edge"] for item in edge_stats if item["stable"]]
+        latest_edges = trial_edge_sets[-1]
+        latest_stable_count = sum(1 for edge in latest_edges if edge in stable_edges)
+        stabilization_ratio = latest_stable_count / len(latest_edges) if latest_edges else 0.0
+
+        return {
+            "input": raw_value,
+            "source": source,
+            "trial_count": trial_count,
+            "stable_ratio_threshold": stable_ratio,
+            "minimum_trials": minimum_trials,
+            "stable_edges": stable_edges,
+            "stable_edge_count": len(stable_edges),
+            "latest_edge_count": len(latest_edges),
+            "stabilization_ratio": stabilization_ratio,
+            "edge_stats": edge_stats,
+        }
+
     def summary(self) -> dict[str, int]:
         tables = ("experiments", "sessions", "inputs", "trials", "path_steps", "snapshots", "outputs", "metrics")
         with self._connect() as conn:
