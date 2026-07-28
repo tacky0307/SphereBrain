@@ -28,7 +28,7 @@ class SurfaceFlowBrain:
 
     The core knows only:
     - numeric activity on input-surface nodes,
-    - propagation through the spherical graph,
+    - multi-path propagation through the spherical graph,
     - numeric activity on output-surface nodes,
     - directed weights, fatigue, usage and reinforcement.
 
@@ -46,6 +46,8 @@ class SurfaceFlowBrain:
         surface_radius: float = 0.78,
         fatigue_gain: float = 0.32,
         fatigue_decay: float = 0.72,
+        transmission_gain: float = 0.86,
+        edge_activity_ratio: float = 0.35,
     ) -> None:
         self.node_count = node_count
         self.neighbors_per_node = neighbors_per_node
@@ -55,6 +57,8 @@ class SurfaceFlowBrain:
         self.surface_radius = surface_radius
         self.fatigue_gain = fatigue_gain
         self.fatigue_decay = fatigue_decay
+        self.transmission_gain = transmission_gain
+        self.edge_activity_ratio = edge_activity_ratio
         self.rng = np.random.default_rng(seed)
 
         self.positions = self._generate_points_in_sphere(node_count)
@@ -123,11 +127,16 @@ class SurfaceFlowBrain:
         threshold: float = 0.08,
         noise: float = 0.006,
     ) -> SurfaceFlowResult:
-        """Propagate one numeric input-surface activity pattern without learning."""
+        """Propagate a numeric surface pattern through many paths at once.
+
+        Every active directed edge contributes. Incoming contributions are
+        combined as a bounded probabilistic union rather than selecting only
+        the strongest parent. Thus several weak routes can jointly activate a
+        node while all activities remain in [0, 1].
+        """
         sources = self._validate_pattern(input_pattern, self.input_nodes, "input_pattern")
         activation = np.zeros(self.node_count, dtype=float)
         fatigue = np.zeros(self.node_count, dtype=float)
-        parent = np.full(self.node_count, -1, dtype=int)
 
         for node, value in sources.items():
             activation[node] = value
@@ -140,11 +149,13 @@ class SurfaceFlowBrain:
 
         for _ in range(steps):
             effective = activation * (1.0 - np.clip(fatigue, 0.0, 0.95))
-            transmitted = effective[:, None] * self.weights
-            transmitted[~self.adjacency] = 0.0
+            contributions = effective[:, None] * self.weights * self.transmission_gain
+            contributions[~self.adjacency] = 0.0
+            contributions = np.clip(contributions, 0.0, 1.0 - 1e-12)
 
-            best_parent = np.argmax(transmitted, axis=0)
-            next_activation = transmitted[best_parent, np.arange(self.node_count)] * 0.86
+            # 1 - product(1 - contribution) is a bounded superposition. It
+            # preserves each route's influence and rewards simultaneous arrival.
+            next_activation = 1.0 - np.prod(1.0 - contributions, axis=0)
             if noise:
                 next_activation += self.rng.normal(0.0, noise, self.node_count)
             next_activation = np.clip(next_activation, 0.0, 1.0)
@@ -152,11 +163,10 @@ class SurfaceFlowBrain:
 
             active_now = np.flatnonzero(next_activation > 0).tolist()
             history.append(active_now)
-            for target in active_now:
-                source = int(best_parent[target])
-                if transmitted[source, target] >= threshold:
-                    parent[target] = source
-                    traversed.append((source, target))
+
+            edge_threshold = threshold * self.edge_activity_ratio
+            active_edges = np.argwhere(contributions >= edge_threshold)
+            traversed.extend((int(source), int(target)) for source, target in active_edges)
 
             visible = np.flatnonzero((next_activation > 0) & output_mask)
             output_history.append({int(n): float(next_activation[n]) for n in visible})
