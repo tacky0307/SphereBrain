@@ -30,7 +30,8 @@ class SurfaceFlowBrain:
     - numeric activity on input-surface nodes,
     - multi-path propagation through the spherical graph,
     - numeric activity on output-surface nodes,
-    - directed weights, fatigue, usage and reinforcement.
+    - directed weights, fatigue, usage and reinforcement,
+    - an optional short-term activation field left by recent experience.
 
     Text, images, sounds and scalar values must be converted into surface
     patterns by external encoders. The core never receives semantic labels.
@@ -51,6 +52,10 @@ class SurfaceFlowBrain:
         route_usage_penalty: float = 0.18,
         node_usage_penalty: float = 0.035,
         same_experience_penalty: float = 0.45,
+        activation_field_enabled: bool = False,
+        activation_field_influence: float = 0.05,
+        activation_field_decay: float = 0.90,
+        activation_field_gain: float = 0.10,
     ) -> None:
         self.node_count = node_count
         self.neighbors_per_node = neighbors_per_node
@@ -65,6 +70,11 @@ class SurfaceFlowBrain:
         self.route_usage_penalty = route_usage_penalty
         self.node_usage_penalty = node_usage_penalty
         self.same_experience_penalty = same_experience_penalty
+        self.activation_field_enabled = activation_field_enabled
+        self.activation_field_influence = activation_field_influence
+        self.activation_field_decay = activation_field_decay
+        self.activation_field_gain = activation_field_gain
+        self._validate_activation_field_parameters()
         self.rng = np.random.default_rng(seed)
 
         self.positions = self._generate_points_in_sphere(node_count)
@@ -72,6 +82,7 @@ class SurfaceFlowBrain:
         self.weights = np.zeros((node_count, node_count), dtype=float)
         self.usage = np.zeros((node_count, node_count), dtype=int)
         self.node_usage = np.zeros(node_count, dtype=int)
+        self.activation_field = np.zeros(node_count, dtype=float)
         self._connect_nearest_nodes()
 
         radii = np.linalg.norm(self.positions, axis=1)
@@ -80,6 +91,36 @@ class SurfaceFlowBrain:
         self.output_nodes = np.flatnonzero(surface & (self.positions[:, 0] >= 0)).tolist()
         if len(self.input_nodes) < 4 or len(self.output_nodes) < 4:
             raise ValueError("Not enough surface nodes; lower surface_radius or increase node_count.")
+
+    def _validate_activation_field_parameters(self) -> None:
+        for name, value in (
+            ("activation_field_influence", self.activation_field_influence),
+            ("activation_field_decay", self.activation_field_decay),
+            ("activation_field_gain", self.activation_field_gain),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1]")
+
+    def reset_activation_field(self) -> None:
+        """Forget all short-term activity without changing learned pathways."""
+        self.activation_field.fill(0.0)
+
+    def activation_field_stats(self) -> dict[str, float]:
+        """Return compact diagnostics for experiments and monitoring."""
+        return {
+            "mean": float(np.mean(self.activation_field)),
+            "max": float(np.max(self.activation_field)),
+            "active_ratio": float(np.mean(self.activation_field > 1e-6)),
+            "energy": float(np.sum(self.activation_field)),
+        }
+
+    def _update_activation_field(self, trace: np.ndarray) -> None:
+        if not self.activation_field_enabled:
+            return
+        trace = np.clip(np.asarray(trace, dtype=float), 0.0, 1.0)
+        self.activation_field *= self.activation_field_decay
+        self.activation_field += self.activation_field_gain * trace
+        self.activation_field = np.clip(self.activation_field, 0.0, 1.0)
 
     def _generate_points_in_sphere(self, count: int) -> np.ndarray:
         directions = self.rng.normal(size=(count, 3))
@@ -132,6 +173,8 @@ class SurfaceFlowBrain:
         steps: int = 24,
         threshold: float = 0.08,
         noise: float = 0.006,
+        use_activation_field: bool | None = None,
+        update_activation_field: bool = False,
     ) -> SurfaceFlowResult:
         """Propagate a numeric surface pattern through many paths at once.
 
@@ -139,6 +182,10 @@ class SurfaceFlowBrain:
         combined as a bounded probabilistic union rather than selecting only
         the strongest parent. Thus several weak routes can jointly activate a
         node while all activities remain in [0, 1].
+
+        When the short-term activation field is enabled, a weak residue from
+        recent experience tilts the initial activity landscape. Updating the
+        field is explicit so measurements can observe without contaminating it.
         """
         sources = self._validate_pattern(input_pattern, self.input_nodes, "input_pattern")
         activation = np.zeros(self.node_count, dtype=float)
@@ -147,6 +194,17 @@ class SurfaceFlowBrain:
         for node, value in sources.items():
             activation[node] = value
 
+        if use_activation_field is None:
+            use_activation_field = self.activation_field_enabled
+        if use_activation_field and self.activation_field_enabled:
+            field_activity = np.clip(
+                self.activation_field * self.activation_field_influence,
+                0.0,
+                1.0,
+            )
+            activation = 1.0 - (1.0 - activation) * (1.0 - field_activity)
+
+        trace = activation.copy()
         output_mask = np.zeros(self.node_count, dtype=bool)
         output_mask[self.output_nodes] = True
         output_history: list[dict[int, float]] = []
@@ -159,13 +217,12 @@ class SurfaceFlowBrain:
             contributions[~self.adjacency] = 0.0
             contributions = np.clip(contributions, 0.0, 1.0 - 1e-12)
 
-            # 1 - product(1 - contribution) is a bounded superposition. It
-            # preserves each route's influence and rewards simultaneous arrival.
             next_activation = 1.0 - np.prod(1.0 - contributions, axis=0)
             if noise:
                 next_activation += self.rng.normal(0.0, noise, self.node_count)
             next_activation = np.clip(next_activation, 0.0, 1.0)
             next_activation[next_activation < threshold] = 0.0
+            trace = np.maximum(trace, next_activation)
 
             active_now = np.flatnonzero(next_activation > 0).tolist()
             history.append(active_now)
@@ -184,6 +241,9 @@ class SurfaceFlowBrain:
             if not active_now:
                 break
 
+        if update_activation_field:
+            self._update_activation_field(trace)
+
         return SurfaceFlowResult(
             source_nodes=sorted(sources),
             output_history=output_history,
@@ -196,6 +256,7 @@ class SurfaceFlowBrain:
         self,
         input_pattern: SurfacePattern,
         target_pattern: SurfacePattern,
+        update_activation_field: bool = False,
     ) -> set[tuple[int, int]]:
         """Learn one numeric input-target experience with route diversity.
 
@@ -204,6 +265,10 @@ class SurfaceFlowBrain:
         acquire a congestion cost. Paths already selected during the same
         experience receive an additional temporary cost. Repeated experiences
         therefore form a family of related routes instead of one dominant trunk.
+
+        If requested, the teacher-guided route also leaves a decaying short-term
+        activity trace. Pathway weights remain long-term memory; this field is
+        temporary state.
         """
         inputs = self._validate_pattern(input_pattern, self.input_nodes, "input_pattern")
         targets = self._validate_pattern(target_pattern, self.output_nodes, "target_pattern")
@@ -220,6 +285,22 @@ class SurfaceFlowBrain:
             edges.update(zip(path, path[1:]))
 
         self._reinforce(edges)
+
+        if update_activation_field and self.activation_field_enabled:
+            trace = np.zeros(self.node_count, dtype=float)
+            for node, value in inputs.items():
+                trace[node] = max(trace[node], value)
+            for node, value in targets.items():
+                trace[node] = max(trace[node], value)
+            for source, target in edges:
+                route_activity = min(
+                    1.0,
+                    0.5 * (self.weights[source, target] + self.weights[target, source]),
+                )
+                trace[source] = max(trace[source], route_activity)
+                trace[target] = max(trace[target], route_activity)
+            self._update_activation_field(trace)
+
         return edges
 
     def _shortest_path(
