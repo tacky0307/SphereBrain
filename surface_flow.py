@@ -48,6 +48,9 @@ class SurfaceFlowBrain:
         fatigue_decay: float = 0.72,
         transmission_gain: float = 0.86,
         edge_activity_ratio: float = 0.35,
+        route_usage_penalty: float = 0.18,
+        node_usage_penalty: float = 0.035,
+        same_experience_penalty: float = 0.45,
     ) -> None:
         self.node_count = node_count
         self.neighbors_per_node = neighbors_per_node
@@ -59,6 +62,9 @@ class SurfaceFlowBrain:
         self.fatigue_decay = fatigue_decay
         self.transmission_gain = transmission_gain
         self.edge_activity_ratio = edge_activity_ratio
+        self.route_usage_penalty = route_usage_penalty
+        self.node_usage_penalty = node_usage_penalty
+        self.same_experience_penalty = same_experience_penalty
         self.rng = np.random.default_rng(seed)
 
         self.positions = self._generate_points_in_sphere(node_count)
@@ -191,12 +197,13 @@ class SurfaceFlowBrain:
         input_pattern: SurfacePattern,
         target_pattern: SurfacePattern,
     ) -> set[tuple[int, int]]:
-        """Learn one numeric input-target experience.
+        """Learn one numeric input-target experience with route diversity.
 
-        This first implementation is teacher-guided: active input and target
-        surface populations are paired by activity rank, and their strongest
-        existing routes are reinforced. The teacher supplies only two numeric
-        surface patterns; it supplies no words or semantic meaning.
+        Input and target populations are paired by activity rank. Route search
+        still prefers strong connections, but repeatedly used edges and nodes
+        acquire a congestion cost. Paths already selected during the same
+        experience receive an additional temporary cost. Repeated experiences
+        therefore form a family of related routes instead of one dominant trunk.
         """
         inputs = self._validate_pattern(input_pattern, self.input_nodes, "input_pattern")
         targets = self._validate_pattern(target_pattern, self.output_nodes, "target_pattern")
@@ -209,16 +216,22 @@ class SurfaceFlowBrain:
         for index in range(pair_count):
             source = input_rank[index % len(input_rank)]
             target = target_rank[index % len(target_rank)]
-            path = self._shortest_path(source, target)
+            path = self._shortest_path(source, target, temporarily_used=edges)
             edges.update(zip(path, path[1:]))
 
         self._reinforce(edges)
         return edges
 
-    def _shortest_path(self, start: int, goal: int) -> list[int]:
+    def _shortest_path(
+        self,
+        start: int,
+        goal: int,
+        temporarily_used: set[tuple[int, int]] | None = None,
+    ) -> list[int]:
         queue: list[tuple[float, int]] = [(0.0, start)]
         costs = {start: 0.0}
         previous: dict[int, int] = {}
+        temporarily_used = temporarily_used or set()
 
         while queue:
             cost, node = heapq.heappop(queue)
@@ -228,7 +241,21 @@ class SurfaceFlowBrain:
                 continue
             for neighbor_raw in self.adjacency[node].nonzero()[0]:
                 neighbor = int(neighbor_raw)
-                edge_cost = 1.0 / max(float(self.weights[node, neighbor]), 1e-9)
+                weight_cost = 1.0 / max(float(self.weights[node, neighbor]), 1e-9)
+                edge_congestion = self.route_usage_penalty * np.log1p(
+                    self.usage[node, neighbor]
+                )
+                node_congestion = self.node_usage_penalty * np.log1p(
+                    self.node_usage[neighbor]
+                )
+                temporary_congestion = (
+                    self.same_experience_penalty
+                    if (node, neighbor) in temporarily_used
+                    else 0.0
+                )
+                edge_cost = weight_cost * (
+                    1.0 + edge_congestion + node_congestion + temporary_congestion
+                )
                 new_cost = cost + edge_cost
                 if new_cost < costs.get(neighbor, float("inf")):
                     costs[neighbor] = new_cost
