@@ -38,11 +38,12 @@ def build_dormant_brain() -> DormantSurfaceFlowBrain:
         node_count=600,
         neighbors_per_node=8,
         seed=42,
-        dormancy_after=40,
-        protection_period=18,
-        dormant_transmission=0.18,
-        dormant_search_penalty=1.8,
+        dormancy_after=160,
+        protection_period=36,
+        dormant_transmission=0.40,
+        dormant_search_penalty=1.2,
         reactivation_boost=0.025,
+        auto_reactivation_traversals=2,
         state_activity_decay=0.92,
         overuse_threshold=0.55,
         overuse_penalty_gain=0.55,
@@ -58,6 +59,8 @@ def print_state_stats(brain: DormantSurfaceFlowBrain, label: str) -> None:
         f"protected={int(stats['protected'])} "
         f"dormant={int(stats['dormant'])} "
         f"reactivations={int(stats['reactivations'])} "
+        f"auto_reactivations={int(stats['auto_reactivations'])} "
+        f"recovery_mode={'ON' if stats['recovery_mode'] else 'OFF'} "
         f"mean_homeostatic_penalty={stats['mean_homeostatic_penalty']:.4f}"
     )
     print()
@@ -91,9 +94,12 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     )
     if isinstance(brain, DormantSurfaceFlowBrain):
         print_state_stats(brain, "pathway states before lesion")
-        reactivations_before = int(brain.pathway_state_stats()["reactivations"])
+        before_stats = brain.pathway_state_stats()
+        reactivations_before = int(before_stats["reactivations"])
+        auto_before = int(before_stats["auto_reactivations"])
     else:
         reactivations_before = 0
+        auto_before = 0
 
     disabled = brain.lesion_most_used_edges(
         fraction=LESION_FRACTION,
@@ -120,7 +126,15 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
         testing,
     )
 
+    if isinstance(brain, DormantSurfaceFlowBrain):
+        brain.set_recovery_mode(True)
+        print("recovery mode: ON (new dormancy suspended)\n")
+
     train(brain, input_encoder, output_encoder, training, RECOVERY_EPOCHS)
+
+    if isinstance(brain, DormantSurfaceFlowBrain):
+        brain.set_recovery_mode(False)
+
     recovered_mae, recovered_edges = evaluate(
         f"--- after {RECOVERY_EPOCHS} recovery epochs ---",
         brain,
@@ -132,9 +146,12 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
 
     if isinstance(brain, DormantSurfaceFlowBrain):
         print_state_stats(brain, "pathway states after recovery")
-        reactivations_after = int(brain.pathway_state_stats()["reactivations"])
+        after_stats = brain.pathway_state_stats()
+        reactivations_after = int(after_stats["reactivations"])
+        auto_after = int(after_stats["auto_reactivations"])
     else:
         reactivations_after = 0
+        auto_after = 0
 
     damage = damaged_mae - pre_mae
     recovered_amount = damaged_mae - recovered_mae
@@ -150,22 +167,31 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     print(f"retained pre-lesion routes: {len(pre_edges & recovered_edges)}")
     print(f"newly traversed routes:     {len(recovered_edges - pre_edges)}")
     if isinstance(brain, DormantSurfaceFlowBrain):
-        print(f"reactivated dormant routes during recovery: {reactivations_after - reactivations_before}")
+        print(
+            "reactivated dormant routes during recovery: "
+            f"{reactivations_after - reactivations_before}"
+        )
+        print(
+            "automatic signal-driven reactivations:      "
+            f"{auto_after - auto_before}"
+        )
     print()
 
 
 def main() -> None:
-    print("SphereBrain protected/dormant/reactivating pathway experiment")
+    print("SphereBrain protected/dormant/reactivating pathway experiment v2")
     print("task: y = 2x")
     print(
         f"pretrain={PRETRAIN_EPOCHS} epochs, lesion={LESION_FRACTION:.0%}, "
         f"recovery={RECOVERY_EPOCHS} epochs"
     )
-    print("dormant pathways preserve weight and can be reactivated by relearning")
+    print("dormant transmission=40%, dormancy delay=4x, protection=2x")
+    print("new dormancy is suspended during recovery")
+    print("strong repeated propagation can automatically reactivate standby routes")
     print()
 
     run_condition("ordinary reinforcement", build_ordinary_brain())
-    run_condition("protected + dormant + reactivation", build_dormant_brain())
+    run_condition("protected + dormant + reactivation v2", build_dormant_brain())
 
 
 if __name__ == "__main__":
