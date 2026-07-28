@@ -27,6 +27,7 @@ class SurfaceFlowBrain:
     - Inputs enter through one part of the surface.
     - Outputs are time-varying activation patterns on another surface area.
     - Directed weights and temporary fatigue prevent one hub from dominating.
+    - Associative learning can reinforce only paths that reach a named target pattern.
     """
 
     def __init__(
@@ -88,12 +89,12 @@ class SurfaceFlowBrain:
                     self.weights[node, other] = forward
                     self.weights[other, node] = reverse
 
-    def stimulus_to_inputs(self, stimulus: str, count: int = 4) -> list[int]:
-        clean = stimulus.strip()
+    @staticmethod
+    def _text_to_nodes(text: str, candidates: list[int], count: int) -> list[int]:
+        clean = text.strip()
         if not clean:
-            raise ValueError("Stimulus is empty.")
+            raise ValueError("Text is empty.")
         digest = sha256(clean.encode("utf-8")).digest()
-        candidates = self.input_nodes
         selected: list[int] = []
         offset = 0
         while len(selected) < min(count, len(candidates)):
@@ -107,6 +108,13 @@ class SurfaceFlowBrain:
                 offset = 0
         return selected
 
+    def stimulus_to_inputs(self, stimulus: str, count: int = 4) -> list[int]:
+        return self._text_to_nodes(stimulus, self.input_nodes, count)
+
+    def concept_to_outputs(self, concept: str, count: int = 4) -> list[int]:
+        """Assign a stable output-surface pattern to a word or concept label."""
+        return self._text_to_nodes(concept, self.output_nodes, count)
+
     def propagate(
         self,
         source_nodes: Iterable[int],
@@ -114,8 +122,10 @@ class SurfaceFlowBrain:
         threshold: float = 0.08,
         noise: float = 0.006,
         learn: bool = True,
+        target_output_nodes: Iterable[int] | None = None,
     ) -> SurfaceFlowResult:
         sources = list(source_nodes)
+        targets = None if target_output_nodes is None else set(target_output_nodes)
         activation = np.zeros(self.node_count, dtype=float)
         fatigue = np.zeros(self.node_count, dtype=float)
         parent = np.full(self.node_count, -1, dtype=int)
@@ -159,7 +169,7 @@ class SurfaceFlowBrain:
             if not active_now:
                 break
 
-        successful_edges = self._successful_paths(parent, output_history, sources)
+        successful_edges = self._successful_paths(parent, output_history, sources, targets)
         if learn and successful_edges:
             self._reinforce(successful_edges)
 
@@ -176,9 +186,12 @@ class SurfaceFlowBrain:
         parent: np.ndarray,
         output_history: list[dict[int, float]],
         sources: list[int],
+        target_output_nodes: set[int] | None = None,
     ) -> set[tuple[int, int]]:
         source_set = set(sources)
         reached = {node for step in output_history for node, value in step.items() if value > 0}
+        if target_output_nodes is not None:
+            reached &= target_output_nodes
         edges: set[tuple[int, int]] = set()
         for node in reached:
             current = node
@@ -216,3 +229,9 @@ class SurfaceFlowBrain:
         b = self.output_vector(right)
         denom = float(np.linalg.norm(a) * np.linalg.norm(b))
         return 0.0 if denom == 0.0 else float(np.dot(a, b) / denom)
+
+    @staticmethod
+    def target_score(result: SurfaceFlowResult, target_nodes: Iterable[int]) -> float:
+        """Total output activation that appeared on the requested target pattern."""
+        targets = set(target_nodes)
+        return sum(value for step in result.output_history for node, value in step.items() if node in targets)
