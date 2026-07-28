@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import heapq
+from collections import Counter
 from collections.abc import Iterable
 
 import numpy as np
@@ -20,29 +21,28 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
 
     - normal: available with ordinary transmission
     - protected: recently useful and temporarily exempt from dormancy
-    - dormant: memory is preserved, but transmission is strongly reduced
+    - dormant: memory is preserved and transmits as a low-power standby route
 
-    A dormant pathway selected during relearning is reactivated instead of
-    being rebuilt from zero. Excessive recent use creates a temporary
-    homeostatic penalty rather than permanently erasing the pathway.
+    Dormant pathways can return either through teacher-guided relearning or when
+    sufficiently strong propagation repeatedly recruits them. During recovery
+    mode, new dormancy is suspended so alternative routes are allowed to form.
     """
 
     def __init__(
         self,
         *args,
-        dormancy_after: int = 40,
-        protection_period: int = 18,
-        dormant_transmission: float = 0.18,
-        dormant_search_penalty: float = 1.8,
+        dormancy_after: int = 160,
+        protection_period: int = 36,
+        dormant_transmission: float = 0.40,
+        dormant_search_penalty: float = 1.2,
         reactivation_boost: float = 0.025,
+        auto_reactivation_traversals: int = 2,
         state_activity_decay: float = 0.92,
         overuse_threshold: float = 0.55,
         overuse_penalty_gain: float = 0.55,
         overuse_penalty_decay: float = 0.82,
         **kwargs,
     ) -> None:
-        # The parent implementation's direct weakening is disabled. This class
-        # supplies state-based bidirectional plasticity instead.
         kwargs["bidirectional_plasticity_enabled"] = False
         super().__init__(*args, **kwargs)
 
@@ -50,6 +50,8 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
             raise ValueError("dormancy_after must be at least 1")
         if protection_period < 0:
             raise ValueError("protection_period must be non-negative")
+        if auto_reactivation_traversals < 1:
+            raise ValueError("auto_reactivation_traversals must be at least 1")
         for name, value in (
             ("dormant_transmission", dormant_transmission),
             ("reactivation_boost", reactivation_boost),
@@ -68,10 +70,12 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
         self.dormant_transmission = float(dormant_transmission)
         self.dormant_search_penalty = float(dormant_search_penalty)
         self.reactivation_boost = float(reactivation_boost)
+        self.auto_reactivation_traversals = int(auto_reactivation_traversals)
         self.state_activity_decay = float(state_activity_decay)
         self.overuse_threshold = float(overuse_threshold)
         self.overuse_penalty_gain = float(overuse_penalty_gain)
         self.overuse_penalty_decay = float(overuse_penalty_decay)
+        self.recovery_mode = False
 
         shape = (self.node_count, self.node_count)
         self.pathway_state = np.full(shape, PATHWAY_NORMAL, dtype=np.uint8)
@@ -80,9 +84,15 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
         self.state_recent_activity = np.zeros(shape, dtype=float)
         self.homeostatic_penalty = np.zeros(shape, dtype=float)
         self.reactivation_count = np.zeros(shape, dtype=np.int32)
+        self.auto_reactivation_count = np.zeros(shape, dtype=np.int32)
         self.last_reactivated: set[tuple[int, int]] = set()
+        self.last_auto_reactivated: set[tuple[int, int]] = set()
 
         self.pathway_state[~self.adjacency] = PATHWAY_DORMANT
+
+    def set_recovery_mode(self, enabled: bool) -> None:
+        """Suspend new dormancy while damaged pathways are being relearned."""
+        self.recovery_mode = bool(enabled)
 
     def pathway_state_stats(self) -> dict[str, float]:
         connected = self.adjacency
@@ -93,7 +103,9 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
             ),
             "dormant": float(np.count_nonzero(connected & (self.pathway_state == PATHWAY_DORMANT))),
             "reactivations": float(np.sum(self.reactivation_count[connected])),
+            "auto_reactivations": float(np.sum(self.auto_reactivation_count[connected])),
             "mean_homeostatic_penalty": float(np.mean(self.homeostatic_penalty[connected])),
+            "recovery_mode": float(self.recovery_mode),
         }
 
     def _effective_weight_matrix(self) -> np.ndarray:
@@ -102,6 +114,29 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
         multipliers[dormant] *= self.dormant_transmission
         multipliers *= 1.0 - np.clip(self.homeostatic_penalty, 0.0, 0.95)
         return self.weights * multipliers
+
+    def _reactivate_pathway(self, source: int, target: int, automatic: bool) -> None:
+        if not self.edge_enabled[source, target]:
+            return
+        if self.pathway_state[source, target] != PATHWAY_DORMANT:
+            return
+        self.pathway_state[source, target] = PATHWAY_PROTECTED
+        self.protection_remaining[source, target] = self.protection_period
+        self.inactive_age[source, target] = 0
+        self.reactivation_count[source, target] += 1
+        self.last_reactivated.add((source, target))
+        if automatic:
+            self.auto_reactivation_count[source, target] += 1
+            self.last_auto_reactivated.add((source, target))
+
+    def _auto_reactivate_from_result(self, result: SurfaceFlowResult) -> None:
+        """Wake dormant standby routes repeatedly recruited by strong flow."""
+        self.last_auto_reactivated = set()
+        counts = Counter(result.traversed_edges)
+        for (source, target), count in counts.items():
+            if count < self.auto_reactivation_traversals:
+                continue
+            self._reactivate_pathway(source, target, automatic=True)
 
     def propagate(
         self,
@@ -112,12 +147,10 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
         use_activation_field: bool | None = None,
         update_activation_field: bool = False,
     ) -> SurfaceFlowResult:
-        # Parent propagation reads self.weights directly. Temporarily expose the
-        # state-adjusted transmission matrix, then restore long-term memory.
         stored_weights = self.weights
         self.weights = self._effective_weight_matrix()
         try:
-            return super().propagate(
+            result = super().propagate(
                 input_pattern=input_pattern,
                 steps=steps,
                 threshold=threshold,
@@ -127,6 +160,8 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
             )
         finally:
             self.weights = stored_weights
+        self._auto_reactivate_from_result(result)
+        return result
 
     def _shortest_path(
         self,
@@ -212,19 +247,17 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
             self.inactive_age[source, target] = 0
 
             if self.pathway_state[source, target] == PATHWAY_DORMANT:
-                self.pathway_state[source, target] = PATHWAY_PROTECTED
-                self.protection_remaining[source, target] = self.protection_period
-                self.reactivation_count[source, target] += 1
-                self.last_reactivated.add((source, target))
+                self._reactivate_pathway(source, target, automatic=False)
             else:
                 self.pathway_state[source, target] = PATHWAY_PROTECTED
                 self.protection_remaining[source, target] = max(
                     self.protection_remaining[source, target], self.protection_period
                 )
 
-        normal = connected_enabled & (self.pathway_state == PATHWAY_NORMAL)
-        become_dormant = normal & (self.inactive_age >= self.dormancy_after)
-        self.pathway_state[become_dormant] = PATHWAY_DORMANT
+        if not self.recovery_mode:
+            normal = connected_enabled & (self.pathway_state == PATHWAY_NORMAL)
+            become_dormant = normal & (self.inactive_age >= self.dormancy_after)
+            self.pathway_state[become_dormant] = PATHWAY_DORMANT
 
         overused = connected_enabled & (self.state_recent_activity > self.overuse_threshold)
         excess = np.zeros_like(self.state_recent_activity)
@@ -239,9 +272,6 @@ class DormantSurfaceFlowBrain(SurfaceFlowBrain):
     def _reinforce(self, edges: Iterable[tuple[int, int]]) -> None:
         edge_set = set(edges)
         self._update_pathway_states(edge_set)
-
-        # Keep ordinary very slow global decay, but never apply the old direct
-        # unused/overused weakening. Dormancy preserves the underlying weight.
         self.weights[self.edge_enabled] *= 1.0 - self.decay_rate
 
         for source, target in edge_set:
