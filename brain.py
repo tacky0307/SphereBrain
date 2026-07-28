@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 import json
-import hashlib
 import numpy as np
 
 
@@ -18,6 +17,8 @@ class SignalResult:
 
 
 class SphereBrain:
+    """数値刺激だけを扱うSphere BrainのCore。"""
+
     def __init__(
         self,
         node_count: int = 240,
@@ -64,25 +65,6 @@ class SphereBrain:
                     self.weights[a, b] = weight
                     self.weights[b, a] = weight
 
-    def text_to_sources(self, text: str, count: int = 3) -> list[int]:
-        clean = text.strip()
-        if not clean:
-            raise ValueError("入力が空です。")
-
-        digest = hashlib.sha256(clean.encode("utf-8")).digest()
-        sources: list[int] = []
-        offset = 0
-        while len(sources) < count:
-            value = int.from_bytes(digest[offset:offset+4], "big")
-            node = value % self.node_count
-            if node not in sources:
-                sources.append(node)
-            offset += 4
-            if offset + 4 > len(digest):
-                digest = hashlib.sha256(digest).digest()
-                offset = 0
-        return sources
-
     def propagate(
         self,
         source_nodes: Iterable[int],
@@ -92,15 +74,21 @@ class SphereBrain:
         learn: bool = True,
         context_nodes: Iterable[int] | None = None,
     ) -> SignalResult:
-        sources = list(source_nodes)
-        activation = np.zeros(self.node_count, dtype=float)
+        sources = [int(node) for node in source_nodes]
+        if not sources:
+            raise ValueError("source_nodes must not be empty")
+        if any(node < 0 or node >= self.node_count for node in sources):
+            raise ValueError("source node is outside Core")
 
+        activation = np.zeros(self.node_count, dtype=float)
         for index, node in enumerate(sources):
             activation[node] = max(activation[node], 1.0 - index * 0.08)
 
         if context_nodes:
             for node in context_nodes:
-                activation[node] = max(activation[node], 0.42)
+                node = int(node)
+                if 0 <= node < self.node_count:
+                    activation[node] = max(activation[node], 0.42)
 
         activated_nodes = set(np.flatnonzero(activation > 0).tolist())
         traversed_edges: set[tuple[int, int]] = set()
@@ -156,21 +144,6 @@ class SphereBrain:
             self.node_usage[node] += 1
 
         self.weights = np.clip(self.weights, 0.0, 1.0)
-
-    def idle_cycle(self, remembered_nodes: Iterable[int]) -> SignalResult | None:
-        nodes = list(remembered_nodes)
-        if not nodes:
-            return None
-
-        source_count = min(2, len(nodes))
-        sources = self.rng.choice(nodes, size=source_count, replace=False).tolist()
-        return self.propagate(
-            sources,
-            steps=10,
-            threshold=0.19,
-            noise=0.025,
-            learn=True,
-        )
 
     def strongest_edges(self, limit: int = 40) -> list[dict]:
         upper = np.triu_indices(self.node_count, k=1)
