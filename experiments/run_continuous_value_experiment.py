@@ -25,6 +25,7 @@ TEST_X = np.arange(0.025, 0.5000, 0.05)
 EPOCHS = 40
 PATTERN_WIDTH = 5
 CANDIDATE_Y = np.linspace(0.0, 1.0, 101)
+DISTRIBUTION_POWER = 2.0
 
 
 def output_node_energy(brain: SurfaceFlowBrain, result) -> np.ndarray:
@@ -45,6 +46,25 @@ def candidate_score(gain_by_output_node: dict[int, float], target_pattern) -> fl
         max(0.0, gain_by_output_node.get(node, 0.0)) * activity
         for node, activity in target_pattern.items()
     )
+
+
+def decode_distribution(scored: list[tuple[float, float]]) -> tuple[float, float]:
+    """Decode the full candidate activity distribution as one scalar value.
+
+    Positive candidate scores are converted into population weights. Squaring
+    the scores suppresses diffuse background activity without discarding any
+    positively supported candidate. The decoded value is the weighted center
+    of mass of the complete output distribution.
+    """
+    values = np.asarray([value for value, _ in scored], dtype=float)
+    scores = np.asarray([max(0.0, score) for _, score in scored], dtype=float)
+    weights = scores**DISTRIBUTION_POWER
+    total = float(np.sum(weights))
+    if total <= 0.0:
+        return 0.0, 0.0
+    predicted = float(np.dot(values, weights) / total)
+    confidence = float(np.max(weights) / total)
+    return predicted, confidence
 
 
 def predict_value(
@@ -70,8 +90,9 @@ def predict_value(
         for y in CANDIDATE_Y
     ]
     ranked = sorted(scored, key=lambda item: item[1], reverse=True)
-    predicted, best_score = ranked[0]
-    return predicted, best_score, ranked[:3]
+    winner_value, winner_score = ranked[0]
+    predicted, confidence = decode_distribution(scored)
+    return predicted, confidence, winner_value, winner_score, ranked[:3]
 
 
 def main() -> None:
@@ -92,6 +113,7 @@ def main() -> None:
     print(f"training examples: {len(training)} (x step=0.05)")
     print(f"unseen midpoint tests: {len(testing)}")
     print(f"population pattern width: {PATTERN_WIDTH}")
+    print(f"decoder: full-distribution weighted mean (power={DISTRIBUTION_POWER:.1f})")
     print("SphereBrain core receives numeric surface patterns only.")
     print()
 
@@ -119,8 +141,9 @@ def main() -> None:
             f"min={min(route_counts)} mean={np.mean(route_counts):.1f} max={max(route_counts)}"
         )
         absolute_errors: list[float] = []
+        winner_errors: list[float] = []
         for example in testing:
-            predicted, score, top3 = predict_value(
+            predicted, confidence, winner, winner_score, top3 = predict_value(
                 brain,
                 example.x,
                 input_encoder,
@@ -128,20 +151,28 @@ def main() -> None:
                 baseline_by_test[example.x],
             )
             error = abs(predicted - example.y)
+            winner_error = abs(winner - example.y)
             absolute_errors.append(error)
+            winner_errors.append(winner_error)
             candidates = ", ".join(
                 f"{value:.2f}:{value_score:.4f}"
                 for value, value_score in top3
             )
             print(
                 f"x={example.x:.3f} expected={example.y:.3f} "
-                f"predicted={predicted:.3f} error={error:.3f} "
-                f"gain_score={score:.4f} top=[{candidates}]"
+                f"distributed={predicted:.3f} error={error:.3f} "
+                f"winner={winner:.3f} winner_error={winner_error:.3f} "
+                f"confidence={confidence:.4f} winner_score={winner_score:.4f} "
+                f"top=[{candidates}]"
             )
 
         print(
-            f"mean absolute error: {np.mean(absolute_errors):.4f} | "
+            f"distributed mean absolute error: {np.mean(absolute_errors):.4f} | "
             f"max error: {np.max(absolute_errors):.4f}"
+        )
+        print(
+            f"winner mean absolute error: {np.mean(winner_errors):.4f} | "
+            f"max error: {np.max(winner_errors):.4f}"
         )
         print()
 
