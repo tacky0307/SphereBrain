@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dormant_surface_flow import DormantSurfaceFlowBrain
-from dormant_surface_flow_v4 import SelectiveRecoveryDormantBrain
+from dormant_surface_flow_v5 import MeasuredSelectiveRecoveryBrain
 from surface_flow import SurfaceFlowBrain
 from experiments.run_pathway_recovery_experiment import (
     CANDIDATE_Y,
@@ -38,8 +38,8 @@ def build_ordinary_brain() -> SurfaceFlowBrain:
     )
 
 
-def build_dormant_brain() -> SelectiveRecoveryDormantBrain:
-    return SelectiveRecoveryDormantBrain(
+def build_dormant_brain() -> MeasuredSelectiveRecoveryBrain:
+    return MeasuredSelectiveRecoveryBrain(
         node_count=600,
         neighbors_per_node=8,
         seed=42,
@@ -71,13 +71,24 @@ def print_state_stats(brain: DormantSurfaceFlowBrain, label: str) -> None:
         f"recovery_mode={'ON' if stats['recovery_mode'] else 'OFF'} "
         f"mean_homeostatic_penalty={stats['mean_homeostatic_penalty']:.4f}"
     )
-    if isinstance(brain, SelectiveRecoveryDormantBrain):
+    if isinstance(brain, MeasuredSelectiveRecoveryBrain):
         candidates = brain.candidate_stats()
+        measured = brain.recovery_measurement_stats()
         print(
-            f"awakening_candidates={int(candidates['candidate_edges'])} "
-            f"candidate_selections={int(candidates['candidate_selections'])} "
+            f"current_candidate_edges={int(candidates['candidate_edges'])} "
+            f"current_candidate_selections={int(candidates['candidate_selections'])} "
             f"max_candidate_experiences={int(candidates['max_candidate_experiences'])} "
             f"baseline_active_edges={int(candidates['baseline_active_edges'])}"
+        )
+        print(
+            f"candidate_selection_events_total={int(measured['candidate_selection_events_total'])} "
+            f"candidate_unique_edges_total={int(measured['candidate_unique_edges_total'])} "
+            f"selective_promotions_total={int(measured['selective_promotions_total'])}"
+        )
+        print(
+            f"teacher_direct_reactivations_total={int(measured['teacher_direct_reactivations_total'])} "
+            f"pending_candidate_edges={int(measured['pending_candidate_edges'])} "
+            f"pending_candidate_selection_sum={int(measured['pending_candidate_selection_sum'])}"
         )
     print()
 
@@ -131,7 +142,7 @@ def evaluate_absolute(label, brain, input_encoder, output_encoder, examples):
 
 
 def collect_prelesion_baseline(brain, input_encoder, examples) -> None:
-    if not isinstance(brain, SelectiveRecoveryDormantBrain):
+    if not isinstance(brain, MeasuredSelectiveRecoveryBrain):
         return
     brain.begin_prelesion_baseline_collection()
     for example in examples:
@@ -142,7 +153,7 @@ def collect_prelesion_baseline(brain, input_encoder, examples) -> None:
 def recovery_train(brain, input_encoder, output_encoder, examples, epochs):
     for _ in range(epochs):
         for example in examples:
-            if isinstance(brain, SelectiveRecoveryDormantBrain):
+            if isinstance(brain, MeasuredSelectiveRecoveryBrain):
                 observe(brain, input_encoder.encode(example.x))
             brain.experience(
                 input_encoder.encode(example.x),
@@ -169,10 +180,8 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
         print_state_stats(brain, "pathway states before lesion")
         before_stats = brain.pathway_state_stats()
         reactivations_before = int(before_stats["reactivations"])
-        auto_before = int(before_stats["auto_reactivations"])
     else:
         reactivations_before = 0
-        auto_before = 0
 
     disabled = brain.lesion_most_used_edges(
         fraction=LESION_FRACTION,
@@ -197,7 +206,7 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     if isinstance(brain, DormantSurfaceFlowBrain):
         brain.set_recovery_mode(True)
         print(
-            "recovery mode: ON (new dormancy suspended; top-20 candidate selection enabled)\n"
+            "recovery mode: ON (new dormancy suspended; measured top-20 candidate selection enabled)\n"
         )
 
     recovery_train(
@@ -223,10 +232,8 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
         print_state_stats(brain, "pathway states after recovery")
         after_stats = brain.pathway_state_stats()
         reactivations_after = int(after_stats["reactivations"])
-        auto_after = int(after_stats["auto_reactivations"])
     else:
         reactivations_after = 0
-        auto_after = 0
 
     damage = damaged_mae - pre_mae
     recovered_amount = damaged_mae - recovered_mae
@@ -241,34 +248,50 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     print(f"recovery ratio:          {recovery_ratio:.1%}")
     print(f"retained pre-lesion routes: {len(pre_edges & recovered_edges)}")
     print(f"newly traversed routes:     {len(recovered_edges - pre_edges)}")
-    if isinstance(brain, DormantSurfaceFlowBrain):
+    if isinstance(brain, MeasuredSelectiveRecoveryBrain):
+        measured = brain.recovery_measurement_stats()
+        print("recovery pathway measurements")
         print(
-            "reactivated dormant routes during recovery: "
-            f"{reactivations_after - reactivations_before}"
+            "candidate selection events (extended): "
+            f"{int(measured['candidate_selection_events_total'])}"
         )
         print(
-            "automatic selective promotions:             "
-            f"{auto_after - auto_before}"
+            "unique candidate pathways:             "
+            f"{int(measured['candidate_unique_edges_total'])}"
+        )
+        print(
+            "promoted after 3 selections:            "
+            f"{int(measured['selective_promotions_total'])}"
+        )
+        print(
+            "teacher-direct reactivations:           "
+            f"{int(measured['teacher_direct_reactivations_total'])}"
+        )
+        print(
+            "candidates still pending:               "
+            f"{int(measured['pending_candidate_edges'])}"
+        )
+        print(
+            "all dormant reactivations during recovery: "
+            f"{reactivations_after - reactivations_before}"
         )
     print()
 
 
 def main() -> None:
-    print("SphereBrain selective dormant-pathway recovery experiment v4")
+    print("SphereBrain measured selective dormant-pathway recovery experiment v5")
     print("task: y = 2x")
     print(
         f"pretrain={PRETRAIN_EPOCHS} epochs, lesion={LESION_FRACTION:.0%}, "
         f"recovery={RECOVERY_EPOCHS} epochs"
     )
     print("dormant transmission=40%, dormancy delay=160, protection=36")
-    print("new dormancy is suspended during recovery")
     print("dormant -> awakening candidate -> protected")
-    print("candidate conditions: strong contribution + >=2x pre-lesion activity")
-    print("top 20 candidates per experience; promote after 3 selections")
+    print("candidate events, unique paths, promotions, teacher wakes, and pending paths are separated")
     print()
 
     run_condition("ordinary reinforcement", build_ordinary_brain())
-    run_condition("selective dormant recovery v4", build_dormant_brain())
+    run_condition("measured selective dormant recovery v5", build_dormant_brain())
 
 
 if __name__ == "__main__":
