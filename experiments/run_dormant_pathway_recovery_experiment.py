@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dormant_surface_flow import DormantSurfaceFlowBrain
-from dormant_surface_flow_v3 import RecoveryGatedDormantBrain
+from dormant_surface_flow_v4 import SelectiveRecoveryDormantBrain
 from surface_flow import SurfaceFlowBrain
 from experiments.run_pathway_recovery_experiment import (
     CANDIDATE_Y,
@@ -38,8 +38,8 @@ def build_ordinary_brain() -> SurfaceFlowBrain:
     )
 
 
-def build_dormant_brain() -> RecoveryGatedDormantBrain:
-    return RecoveryGatedDormantBrain(
+def build_dormant_brain() -> SelectiveRecoveryDormantBrain:
+    return SelectiveRecoveryDormantBrain(
         node_count=600,
         neighbors_per_node=8,
         seed=42,
@@ -48,14 +48,14 @@ def build_dormant_brain() -> RecoveryGatedDormantBrain:
         dormant_transmission=0.40,
         dormant_search_penalty=1.2,
         reactivation_boost=0.025,
-        auto_reactivation_traversals=2,
         state_activity_decay=0.92,
         overuse_threshold=0.55,
-        # Isolate dormancy/reactivation in this experiment. Homeostatic
-        # suppression previously made trained output lower than the fixed
-        # untrained baseline and caused every decoder score to be clipped to 0.
         overuse_penalty_gain=0.0,
         overuse_penalty_decay=0.82,
+        strong_contribution_threshold=0.08,
+        activity_increase_ratio=2.0,
+        candidate_required_experiences=3,
+        max_candidates_per_experience=20,
     )
 
 
@@ -71,11 +71,18 @@ def print_state_stats(brain: DormantSurfaceFlowBrain, label: str) -> None:
         f"recovery_mode={'ON' if stats['recovery_mode'] else 'OFF'} "
         f"mean_homeostatic_penalty={stats['mean_homeostatic_penalty']:.4f}"
     )
+    if isinstance(brain, SelectiveRecoveryDormantBrain):
+        candidates = brain.candidate_stats()
+        print(
+            f"awakening_candidates={int(candidates['candidate_edges'])} "
+            f"candidate_selections={int(candidates['candidate_selections'])} "
+            f"max_candidate_experiences={int(candidates['max_candidate_experiences'])} "
+            f"baseline_active_edges={int(candidates['baseline_active_edges'])}"
+        )
     print()
 
 
 def predict_absolute(brain, x, input_encoder, output_encoder):
-    """Decode current output energy without an obsolete untrained baseline."""
     result = observe(brain, input_encoder.encode(x))
     energy = output_node_energy(brain, result)
     energy_by_node = {
@@ -107,10 +114,7 @@ def evaluate_absolute(label, brain, input_encoder, output_encoder, examples):
     print(label)
     for example in examples:
         prediction, confidence, edges = predict_absolute(
-            brain,
-            example.x,
-            input_encoder,
-            output_encoder,
+            brain, example.x, input_encoder, output_encoder
         )
         error = abs(prediction - example.y)
         errors.append(error)
@@ -126,11 +130,19 @@ def evaluate_absolute(label, brain, input_encoder, output_encoder, examples):
     return mae, traversed
 
 
+def collect_prelesion_baseline(brain, input_encoder, examples) -> None:
+    if not isinstance(brain, SelectiveRecoveryDormantBrain):
+        return
+    brain.begin_prelesion_baseline_collection()
+    for example in examples:
+        observe(brain, input_encoder.encode(example.x))
+    brain.end_prelesion_baseline_collection()
+
+
 def recovery_train(brain, input_encoder, output_encoder, examples, epochs):
-    """Let strong flow wake standby routes, then reinforce useful alternatives."""
     for _ in range(epochs):
         for example in examples:
-            if isinstance(brain, RecoveryGatedDormantBrain):
+            if isinstance(brain, SelectiveRecoveryDormantBrain):
                 observe(brain, input_encoder.encode(example.x))
             brain.experience(
                 input_encoder.encode(example.x),
@@ -148,13 +160,11 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     print("=" * 76)
 
     train(brain, input_encoder, output_encoder, training, PRETRAIN_EPOCHS)
+    collect_prelesion_baseline(brain, input_encoder, training + testing)
     pre_mae, pre_edges = evaluate_absolute(
-        "--- before lesion ---",
-        brain,
-        input_encoder,
-        output_encoder,
-        testing,
+        "--- before lesion ---", brain, input_encoder, output_encoder, testing
     )
+
     if isinstance(brain, DormantSurfaceFlowBrain):
         print_state_stats(brain, "pathway states before lesion")
         before_stats = brain.pathway_state_stats()
@@ -181,16 +191,14 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     print()
 
     damaged_mae, damaged_edges = evaluate_absolute(
-        "--- immediately after lesion ---",
-        brain,
-        input_encoder,
-        output_encoder,
-        testing,
+        "--- immediately after lesion ---", brain, input_encoder, output_encoder, testing
     )
 
     if isinstance(brain, DormantSurfaceFlowBrain):
         brain.set_recovery_mode(True)
-        print("recovery mode: ON (new dormancy suspended; strong-flow waking enabled)\n")
+        print(
+            "recovery mode: ON (new dormancy suspended; top-20 candidate selection enabled)\n"
+        )
 
     recovery_train(
         brain,
@@ -239,27 +247,28 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
             f"{reactivations_after - reactivations_before}"
         )
         print(
-            "automatic signal-driven reactivations:      "
+            "automatic selective promotions:             "
             f"{auto_after - auto_before}"
         )
     print()
 
 
 def main() -> None:
-    print("SphereBrain protected/dormant/reactivating pathway experiment v3")
+    print("SphereBrain selective dormant-pathway recovery experiment v4")
     print("task: y = 2x")
     print(
         f"pretrain={PRETRAIN_EPOCHS} epochs, lesion={LESION_FRACTION:.0%}, "
         f"recovery={RECOVERY_EPOCHS} epochs"
     )
-    print("dormant transmission=40%, dormancy delay=4x, protection=2x")
-    print("evaluation is read-only; automatic waking is recovery-gated")
-    print("decoder uses current absolute output energy, not a stale baseline")
-    print("homeostatic penalty is disabled to isolate dormancy/reactivation")
+    print("dormant transmission=40%, dormancy delay=160, protection=36")
+    print("new dormancy is suspended during recovery")
+    print("dormant -> awakening candidate -> protected")
+    print("candidate conditions: strong contribution + >=2x pre-lesion activity")
+    print("top 20 candidates per experience; promote after 3 selections")
     print()
 
     run_condition("ordinary reinforcement", build_ordinary_brain())
-    run_condition("protected + dormant + reactivation v3", build_dormant_brain())
+    run_condition("selective dormant recovery v4", build_dormant_brain())
 
 
 if __name__ == "__main__":
