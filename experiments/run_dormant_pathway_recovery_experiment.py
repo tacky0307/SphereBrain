@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dormant_surface_flow import DormantSurfaceFlowBrain
-from dormant_surface_flow_v6 import MeanBaselineStagedRecoveryBrain
+from dormant_surface_flow_v7 import DiverseRegionCappedRecoveryBrain
 from surface_flow import SurfaceFlowBrain
 from experiments.run_pathway_recovery_experiment import (
     CANDIDATE_Y,
@@ -29,6 +29,11 @@ from experiments.run_pathway_recovery_experiment import (
 )
 
 
+INPUT_REGION_COUNT = 3
+MAX_PROMOTIONS_PER_EPOCH = 10
+MAX_PROMOTIONS_TOTAL = 100
+
+
 def build_ordinary_brain() -> SurfaceFlowBrain:
     return SurfaceFlowBrain(
         node_count=600,
@@ -38,8 +43,8 @@ def build_ordinary_brain() -> SurfaceFlowBrain:
     )
 
 
-def build_dormant_brain() -> MeanBaselineStagedRecoveryBrain:
-    return MeanBaselineStagedRecoveryBrain(
+def build_dormant_brain() -> DiverseRegionCappedRecoveryBrain:
+    return DiverseRegionCappedRecoveryBrain(
         node_count=600,
         neighbors_per_node=8,
         seed=42,
@@ -57,7 +62,16 @@ def build_dormant_brain() -> MeanBaselineStagedRecoveryBrain:
         activity_increase_margin=0.02,
         candidate_required_experiences=3,
         max_candidates_per_experience=20,
+        max_promotions_per_epoch=MAX_PROMOTIONS_PER_EPOCH,
+        max_promotions_total=MAX_PROMOTIONS_TOTAL,
     )
+
+
+def input_region(x: float, minimum: float, maximum: float) -> int:
+    if maximum <= minimum:
+        return 0
+    normalized = float(np.clip((x - minimum) / (maximum - minimum), 0.0, 1.0))
+    return min(INPUT_REGION_COUNT - 1, int(normalized * INPUT_REGION_COUNT))
 
 
 def predict_absolute(brain, x, input_encoder, output_encoder):
@@ -106,7 +120,7 @@ def evaluate_absolute(label, brain, input_encoder, output_encoder, examples):
 
 
 def collect_prelesion_baseline(brain, input_encoder, examples) -> None:
-    if not isinstance(brain, MeanBaselineStagedRecoveryBrain):
+    if not isinstance(brain, DiverseRegionCappedRecoveryBrain):
         return
     brain.begin_prelesion_baseline_collection()
     for example in examples:
@@ -115,18 +129,31 @@ def collect_prelesion_baseline(brain, input_encoder, examples) -> None:
 
 
 def recovery_train(brain, input_encoder, output_encoder, examples, epochs):
-    for _ in range(epochs):
+    minimum = min(example.x for example in examples)
+    maximum = max(example.x for example in examples)
+    for epoch in range(epochs):
+        if isinstance(brain, DiverseRegionCappedRecoveryBrain):
+            brain.begin_recovery_epoch()
         for example in examples:
-            # Stage 1: signal propagation selects candidates and may promote an
-            # edge after its third selection.
-            if isinstance(brain, MeanBaselineStagedRecoveryBrain):
+            if isinstance(brain, DiverseRegionCappedRecoveryBrain):
+                region = input_region(example.x, minimum, maximum)
+                brain.set_experience_region(region)
+                # Candidate selection happens before teacher reinforcement.
                 observe(brain, input_encoder.encode(example.x))
-            # Stage 2: teacher reinforcement runs afterwards. The v6 brain blocks
-            # dormant edges here; only already-promoted protected edges can learn.
             brain.experience(
                 input_encoder.encode(example.x),
                 output_encoder.encode(example.y),
             )
+        if isinstance(brain, DiverseRegionCappedRecoveryBrain):
+            measured = brain.recovery_measurement_stats()
+            print(
+                f"epoch {epoch + 1:02d}: promotions={int(measured['promotions_this_epoch'])} "
+                f"total={int(measured['selective_promotions_total'])} "
+                f"pending={int(measured['pending_candidate_edges'])}"
+            )
+    if isinstance(brain, DiverseRegionCappedRecoveryBrain):
+        brain.set_experience_region(None)
+    print()
 
 
 def print_state_stats(brain: DormantSurfaceFlowBrain, label: str) -> None:
@@ -137,13 +164,18 @@ def print_state_stats(brain: DormantSurfaceFlowBrain, label: str) -> None:
         f"dormant={int(stats['dormant'])} reactivations={int(stats['reactivations'])} "
         f"recovery_mode={'ON' if stats['recovery_mode'] else 'OFF'}"
     )
-    if isinstance(brain, MeanBaselineStagedRecoveryBrain):
+    if isinstance(brain, DiverseRegionCappedRecoveryBrain):
         measured = brain.recovery_measurement_stats()
         print(
             f"candidate_events={int(measured['candidate_selection_events_total'])} "
             f"unique_candidates={int(measured['candidate_unique_edges_total'])} "
             f"promotions={int(measured['selective_promotions_total'])} "
             f"pending={int(measured['pending_candidate_edges'])}"
+        )
+        print(
+            f"duplicate_same_region_ignored={int(measured['duplicate_region_selections_ignored'])} "
+            f"epoch_cap_blocks={int(measured['epoch_promotion_cap_blocks'])} "
+            f"total_cap_blocks={int(measured['total_promotion_cap_blocks'])}"
         )
         print(
             f"teacher_direct_wakes={int(measured['teacher_direct_reactivations_total'])} "
@@ -195,7 +227,7 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     if isinstance(brain, DormantSurfaceFlowBrain):
         brain.set_recovery_mode(True)
         print(
-            "recovery mode: ON (mean+margin candidates first; teacher cannot wake dormant edges)\n"
+            "recovery mode: ON (3 distinct input regions; max 10 promotions/epoch; max 100 total)\n"
         )
 
     recovery_train(brain, input_encoder, output_encoder, training, RECOVERY_EPOCHS)
@@ -231,54 +263,37 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     print(f"retained pre-lesion routes: {len(pre_edges & recovered_edges)}")
     print(f"newly traversed routes:     {len(recovered_edges - pre_edges)}")
 
-    if isinstance(brain, MeanBaselineStagedRecoveryBrain):
+    if isinstance(brain, DiverseRegionCappedRecoveryBrain):
         measured = brain.recovery_measurement_stats()
         print("recovery pathway measurements")
-        print(
-            "candidate selection events:       "
-            f"{int(measured['candidate_selection_events_total'])}"
-        )
-        print(
-            "unique candidate pathways:        "
-            f"{int(measured['candidate_unique_edges_total'])}"
-        )
-        print(
-            "promoted after 3 selections:       "
-            f"{int(measured['selective_promotions_total'])}"
-        )
-        print(
-            "teacher-direct reactivations:      "
-            f"{int(measured['teacher_direct_reactivations_total'])}"
-        )
-        print(
-            "teacher attempts blocked dormant: "
-            f"{int(measured['teacher_blocked_dormant_total'])}"
-        )
-        print(
-            "candidates still pending:          "
-            f"{int(measured['pending_candidate_edges'])}"
-        )
-        print(
-            "all dormant reactivations:         "
-            f"{reactivations_after - reactivations_before}"
-        )
+        print(f"candidate selection events:       {int(measured['candidate_selection_events_total'])}")
+        print(f"unique candidate pathways:        {int(measured['candidate_unique_edges_total'])}")
+        print(f"promoted from 3 distinct regions: {int(measured['selective_promotions_total'])}")
+        print(f"same-region repeats ignored:      {int(measured['duplicate_region_selections_ignored'])}")
+        print(f"epoch-cap promotion blocks:       {int(measured['epoch_promotion_cap_blocks'])}")
+        print(f"total-cap promotion blocks:       {int(measured['total_promotion_cap_blocks'])}")
+        print(f"teacher-direct reactivations:     {int(measured['teacher_direct_reactivations_total'])}")
+        print(f"teacher attempts blocked dormant: {int(measured['teacher_blocked_dormant_total'])}")
+        print(f"candidates still pending:         {int(measured['pending_candidate_edges'])}")
+        print(f"all dormant reactivations:        {reactivations_after - reactivations_before}")
     print()
 
 
 def main() -> None:
-    print("SphereBrain mean-baseline staged dormant recovery experiment v6")
+    print("SphereBrain diverse-region capped dormant recovery experiment v7")
     print("task: y = 2x")
     print(
         f"pretrain={PRETRAIN_EPOCHS} epochs, lesion={LESION_FRACTION:.0%}, "
         f"recovery={RECOVERY_EPOCHS} epochs"
     )
     print("candidate threshold=max(0.04, pre-lesion mean + 0.02)")
-    print("top 20 candidates per experience; promote after 3 selections")
-    print("strict order: dormant -> candidate -> protected -> teacher reinforcement")
-    print("teacher reinforcement cannot directly wake dormant pathways\n")
+    print("top 20 candidates per experience")
+    print("promotion requires 3 distinct input regions; same-region repeats count once")
+    print("promotion caps: max 10 per epoch, max 100 total")
+    print("teacher reinforcement only after promotion; dormant direct wake is blocked\n")
 
     run_condition("ordinary reinforcement", build_ordinary_brain())
-    run_condition("mean-baseline staged dormant recovery v6", build_dormant_brain())
+    run_condition("diverse-region capped dormant recovery v7", build_dormant_brain())
 
 
 if __name__ == "__main__":
