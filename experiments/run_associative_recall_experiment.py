@@ -61,19 +61,43 @@ def score_label(brain: SurfaceFlowBrain, result, label: str) -> float:
     return brain.target_score(result, brain.concept_to_outputs(label))
 
 
-def print_checkpoint(brain: SurfaceFlowBrain, experience_no: int, cue_nodes: list[int]) -> None:
+def observe_scores(
+    brain: SurfaceFlowBrain,
+    cue_nodes: list[int],
+) -> tuple[object, dict[str, float]]:
     # Recall is always free: no target or teacher signal is supplied here.
     observed = brain.propagate(cue_nodes, learn=False, noise=0.0, steps=40, threshold=0.04)
     labels = [TARGET, *DISTRACTORS]
     scores = {label: score_label(brain, observed, label) for label in labels}
-    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    return observed, scores
+
+
+def print_checkpoint(
+    brain: SurfaceFlowBrain,
+    experience_no: int,
+    cue_nodes: list[int],
+    baseline_scores: dict[str, float],
+) -> None:
+    observed, raw_scores = observe_scores(brain, cue_nodes)
+    gains = {
+        label: raw_scores[label] - baseline_scores[label]
+        for label in raw_scores
+    }
+    ranked = sorted(gains.items(), key=lambda item: item[1], reverse=True)
 
     print(f"--- experience {experience_no:>3} ---")
     print("observed output nodes:", observed.output_nodes)
-    for rank, (label, score) in enumerate(ranked, start=1):
+    print("learned gain over experience 0:")
+    for rank, (label, gain) in enumerate(ranked, start=1):
         marker = " <- target" if label == TARGET else ""
-        print(f"  {rank}. {label}: {score:.4f}{marker}")
-    print("recalled word:", ranked[0][0] if ranked[0][1] > 0 else "none")
+        print(
+            f"  {rank}. {label}: gain={gain:+.4f} "
+            f"raw={raw_scores[label]:.4f} baseline={baseline_scores[label]:.4f}{marker}"
+        )
+
+    best_label, best_gain = ranked[0]
+    recalled = best_label if best_gain > 1e-6 else "none"
+    print("recalled word:", recalled)
     print()
 
 
@@ -93,7 +117,8 @@ def main() -> None:
     print("teacher-guided route edges:", len(initial_teacher_edges))
     print()
 
-    print_checkpoint(brain, 0, cue_nodes)
+    _, baseline_scores = observe_scores(brain, cue_nodes)
+    print_checkpoint(brain, 0, cue_nodes, baseline_scores)
 
     for experience_no in range(1, 101):
         # During experience, the correct continuation is present. The current
@@ -103,7 +128,7 @@ def main() -> None:
         brain._reinforce(guided_edges)
 
         if experience_no in CHECKPOINTS:
-            print_checkpoint(brain, experience_no, cue_nodes)
+            print_checkpoint(brain, experience_no, cue_nodes, baseline_scores)
 
 
 if __name__ == "__main__":
