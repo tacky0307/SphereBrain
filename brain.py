@@ -65,6 +65,33 @@ class SphereBrain:
                     self.weights[a, b] = weight
                     self.weights[b, a] = weight
 
+    def _propagation_step(
+        self,
+        activation: np.ndarray,
+        threshold: float,
+        noise: float,
+        carry: float = 0.0,
+    ) -> tuple[np.ndarray, list[int], list[tuple[int, int]]]:
+        transmitted = activation[:, None] * self.weights
+        next_activation = transmitted.max(axis=0) * 0.82
+        if carry:
+            next_activation = np.maximum(next_activation, activation * carry)
+        if noise:
+            next_activation += self.rng.normal(0.0, noise, self.node_count)
+
+        next_activation = np.clip(next_activation, 0.0, 1.0)
+        next_activation[next_activation < threshold] = 0.0
+        active_now = np.flatnonzero(next_activation > 0).tolist()
+
+        step_edges: list[tuple[int, int]] = []
+        for target in active_now:
+            incoming = transmitted[:, target]
+            source = int(np.argmax(incoming))
+            if incoming[source] >= threshold and self.adjacency[source, target]:
+                step_edges.append(tuple(sorted((source, target))))
+
+        return next_activation, active_now, step_edges
+
     def propagate(
         self,
         source_nodes: Iterable[int],
@@ -95,26 +122,14 @@ class SphereBrain:
         history = [sorted(activated_nodes)]
 
         for _ in range(steps):
-            transmitted = activation[:, None] * self.weights
-            next_activation = transmitted.max(axis=0) * 0.82
-
-            if noise:
-                next_activation += self.rng.normal(0.0, noise, self.node_count)
-
-            next_activation = np.clip(next_activation, 0.0, 1.0)
-            next_activation[next_activation < threshold] = 0.0
-
-            active_now = np.flatnonzero(next_activation > 0).tolist()
+            activation, active_now, step_edges = self._propagation_step(
+                activation=activation,
+                threshold=threshold,
+                noise=noise,
+            )
             history.append(active_now)
             activated_nodes.update(active_now)
-
-            for target in active_now:
-                incoming = transmitted[:, target]
-                source = int(np.argmax(incoming))
-                if incoming[source] >= threshold and self.adjacency[source, target]:
-                    traversed_edges.add(tuple(sorted((source, target))))
-
-            activation = next_activation
+            traversed_edges.update(step_edges)
             if not active_now:
                 break
 
@@ -126,6 +141,78 @@ class SphereBrain:
             activated_nodes=sorted(activated_nodes),
             traversed_edges=sorted(traversed_edges),
             activation_history=history,
+            final_activation=activation.copy(),
+        )
+
+    def replay_trace(
+        self,
+        activation_history: Iterable[Iterable[int]],
+        replay_strength: float = 0.28,
+        replay_decay: float = 0.72,
+        threshold: float = 0.12,
+        noise: float = 0.012,
+        settle_steps: int = 6,
+        learn: bool = True,
+    ) -> SignalResult:
+        """過去のTraceを時間順に弱く再刺激し、現在のCoreで再体験する。"""
+        steps = [[int(node) for node in step] for step in activation_history]
+        steps = [step for step in steps if step]
+        if not steps:
+            raise ValueError("activation_history must contain active nodes")
+        if any(node < 0 or node >= self.node_count for step in steps for node in step):
+            raise ValueError("trace node is outside Core")
+        if not 0.0 < replay_strength <= 1.0:
+            raise ValueError("replay_strength must be between 0 and 1")
+        if not 0.0 <= replay_decay <= 1.0:
+            raise ValueError("replay_decay must be between 0 and 1")
+
+        activation = np.zeros(self.node_count, dtype=float)
+        source_nodes = list(dict.fromkeys(steps[0]))
+        activated_nodes: set[int] = set()
+        traversed_edges: set[tuple[int, int]] = set()
+        replay_history: list[list[int]] = []
+
+        for trace_step in steps:
+            activation *= replay_decay
+            for index, node in enumerate(trace_step):
+                strength = replay_strength * max(0.45, 1.0 - index * 0.03)
+                activation[node] = max(activation[node], strength)
+
+            injected = np.flatnonzero(activation > 0).tolist()
+            activated_nodes.update(injected)
+            replay_history.append(injected)
+
+            activation, active_now, step_edges = self._propagation_step(
+                activation=activation,
+                threshold=threshold,
+                noise=noise,
+                carry=0.34,
+            )
+            activated_nodes.update(active_now)
+            traversed_edges.update(step_edges)
+            replay_history.append(active_now)
+
+        for _ in range(settle_steps):
+            activation, active_now, step_edges = self._propagation_step(
+                activation=activation,
+                threshold=threshold,
+                noise=noise,
+                carry=0.18,
+            )
+            activated_nodes.update(active_now)
+            traversed_edges.update(step_edges)
+            replay_history.append(active_now)
+            if not active_now:
+                break
+
+        if learn and traversed_edges:
+            self._reinforce(traversed_edges, activated_nodes)
+
+        return SignalResult(
+            source_nodes=source_nodes,
+            activated_nodes=sorted(activated_nodes),
+            traversed_edges=sorted(traversed_edges),
+            activation_history=replay_history,
             final_activation=activation.copy(),
         )
 
