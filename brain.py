@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
-import json
 import hashlib
+import json
+import os
+import re
+
 import numpy as np
 
 
@@ -40,6 +43,7 @@ class SphereBrain:
         self.node_usage = np.zeros(node_count, dtype=int)
 
         self._connect_nearest_nodes()
+        self._rebuild_sparse_cache()
 
     def _generate_points_in_sphere(self, count: int) -> np.ndarray:
         directions = self.rng.normal(size=(count, 3))
@@ -64,23 +68,67 @@ class SphereBrain:
                     self.weights[a, b] = weight
                     self.weights[b, a] = weight
 
-    def text_to_sources(self, text: str, count: int = 3) -> list[int]:
-        clean = text.strip()
-        if not clean:
-            raise ValueError("入力が空です。")
+    def _rebuild_sparse_cache(self) -> None:
+        """Build compact neighbour lists used by propagation."""
+        self._neighbors = [
+            np.flatnonzero(self.adjacency[node]).astype(np.int32)
+            for node in range(self.node_count)
+        ]
+        upper = np.triu_indices(self.node_count, k=1)
+        mask = self.adjacency[upper]
+        self._edge_a = upper[0][mask]
+        self._edge_b = upper[1][mask]
 
-        digest = hashlib.sha256(clean.encode("utf-8")).digest()
+    @staticmethod
+    def text_units(text: str, min_size: int = 2, max_size: int = 4) -> list[str]:
+        """Split text into reusable short units without a language dictionary."""
+        clean = " ".join(text.strip().split())
+        if not clean:
+            return []
+
+        parts = re.findall(r"[一-龥々〆ヵヶぁ-んァ-ヶー]+|[A-Za-z0-9]+", clean)
+        units: list[str] = []
+        for part in parts:
+            if re.fullmatch(r"[A-Za-z0-9]+", part):
+                units.append(part.lower())
+                continue
+            if len(part) <= min_size:
+                units.append(part)
+                continue
+            for size in range(min_size, min(max_size, len(part)) + 1):
+                units.extend(part[i : i + size] for i in range(len(part) - size + 1))
+
+        return list(dict.fromkeys(units)) or [clean]
+
+    def text_to_sources(self, text: str, count: int = 3) -> list[int]:
+        units = self.text_units(text)
+        if not units:
+            raise ValueError("入力が空です。")
+        if count <= 0:
+            return []
+
         sources: list[int] = []
-        offset = 0
-        while len(sources) < count:
-            value = int.from_bytes(digest[offset:offset+4], "big")
-            node = value % self.node_count
+        selected_indexes = np.linspace(
+            0, len(units) - 1, num=min(len(units), max(count * 2, count)), dtype=int
+        )
+        for index in selected_indexes:
+            digest = hashlib.blake2b(units[int(index)].encode("utf-8"), digest_size=8).digest()
+            node = int.from_bytes(digest, "big") % self.node_count
             if node not in sources:
                 sources.append(node)
-            offset += 4
-            if offset + 4 > len(digest):
-                digest = hashlib.sha256(digest).digest()
-                offset = 0
+            if len(sources) >= count:
+                break
+
+        salt = 0
+        clean = " ".join(text.strip().split())
+        while len(sources) < min(count, self.node_count):
+            digest = hashlib.blake2b(
+                f"{clean}\0{salt}".encode("utf-8"), digest_size=8
+            ).digest()
+            node = int.from_bytes(digest, "big") % self.node_count
+            if node not in sources:
+                sources.append(node)
+            salt += 1
         return sources
 
     def propagate(
@@ -92,7 +140,7 @@ class SphereBrain:
         learn: bool = True,
         context_nodes: Iterable[int] | None = None,
     ) -> SignalResult:
-        sources = list(source_nodes)
+        sources = list(dict.fromkeys(int(node) for node in source_nodes))
         activation = np.zeros(self.node_count, dtype=float)
 
         for index, node in enumerate(sources):
@@ -100,34 +148,46 @@ class SphereBrain:
 
         if context_nodes:
             for node in context_nodes:
-                activation[node] = max(activation[node], 0.42)
+                activation[int(node)] = max(activation[int(node)], 0.42)
 
-        activated_nodes = set(np.flatnonzero(activation > 0).tolist())
+        active = np.flatnonzero(activation > 0)
+        activated_nodes = set(active.tolist())
         traversed_edges: set[tuple[int, int]] = set()
         history = [sorted(activated_nodes)]
 
         for _ in range(steps):
-            transmitted = activation[:, None] * self.weights
-            next_activation = transmitted.max(axis=0) * 0.82
+            best_source = np.full(self.node_count, -1, dtype=np.int32)
+            best_signal = np.zeros(self.node_count, dtype=float)
 
+            for source in active:
+                neighbours = self._neighbors[int(source)]
+                if neighbours.size == 0:
+                    continue
+                signals = activation[int(source)] * self.weights[int(source), neighbours]
+                improved = signals > best_signal[neighbours]
+                if np.any(improved):
+                    targets = neighbours[improved]
+                    best_signal[targets] = signals[improved]
+                    best_source[targets] = int(source)
+
+            next_activation = best_signal * 0.82
             if noise:
                 next_activation += self.rng.normal(0.0, noise, self.node_count)
-
             next_activation = np.clip(next_activation, 0.0, 1.0)
             next_activation[next_activation < threshold] = 0.0
 
-            active_now = np.flatnonzero(next_activation > 0).tolist()
+            active = np.flatnonzero(next_activation > 0)
+            active_now = active.tolist()
             history.append(active_now)
             activated_nodes.update(active_now)
 
             for target in active_now:
-                incoming = transmitted[:, target]
-                source = int(np.argmax(incoming))
-                if incoming[source] >= threshold and self.adjacency[source, target]:
+                source = int(best_source[target])
+                if source >= 0 and best_signal[target] >= threshold:
                     traversed_edges.add(tuple(sorted((source, target))))
 
             activation = next_activation
-            if not active_now:
+            if active.size == 0:
                 break
 
         if learn and traversed_edges:
@@ -142,7 +202,10 @@ class SphereBrain:
         )
 
     def _reinforce(self, edges: Iterable[tuple[int, int]], nodes: Iterable[int]) -> None:
-        self.weights[self.adjacency] *= 1.0 - self.decay_rate
+        if self._edge_a.size:
+            decayed = self.weights[self._edge_a, self._edge_b] * (1.0 - self.decay_rate)
+            self.weights[self._edge_a, self._edge_b] = decayed
+            self.weights[self._edge_b, self._edge_a] = decayed
 
         for a, b in edges:
             current = self.weights[a, b]
@@ -153,15 +216,14 @@ class SphereBrain:
             self.usage[b, a] += 1
 
         for node in nodes:
-            self.node_usage[node] += 1
+            self.node_usage[int(node)] += 1
 
-        self.weights = np.clip(self.weights, 0.0, 1.0)
+        np.clip(self.weights, 0.0, 1.0, out=self.weights)
 
     def idle_cycle(self, remembered_nodes: Iterable[int]) -> SignalResult | None:
         nodes = list(remembered_nodes)
         if not nodes:
             return None
-
         source_count = min(2, len(nodes))
         sources = self.rng.choice(nodes, size=source_count, replace=False).tolist()
         return self.propagate(
@@ -173,10 +235,8 @@ class SphereBrain:
         )
 
     def strongest_edges(self, limit: int = 40) -> list[dict]:
-        upper = np.triu_indices(self.node_count, k=1)
-        mask = self.adjacency[upper]
-        pairs = list(zip(upper[0][mask], upper[1][mask]))
-        pairs.sort(key=lambda e: self.weights[e[0], e[1]], reverse=True)
+        pairs = list(zip(self._edge_a.tolist(), self._edge_b.tolist()))
+        pairs.sort(key=lambda edge: self.weights[edge[0], edge[1]], reverse=True)
         return [
             {
                 "a": int(a),
@@ -196,12 +256,17 @@ class SphereBrain:
             "learning_rate": self.learning_rate,
             "decay_rate": self.decay_rate,
             "positions": self.positions.tolist(),
-            "adjacency": self.adjacency.astype(int).tolist(),
+            "adjacency": self.adjacency.astype(np.uint8).tolist(),
             "weights": self.weights.tolist(),
             "usage": self.usage.tolist(),
             "node_usage": self.node_usage.tolist(),
         }
-        path.write_text(json.dumps(data), encoding="utf-8")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
 
     @classmethod
     def load(cls, path: str | Path) -> "SphereBrain":
@@ -217,5 +282,8 @@ class SphereBrain:
         brain.adjacency = np.asarray(data["adjacency"], dtype=bool)
         brain.weights = np.asarray(data["weights"], dtype=float)
         brain.usage = np.asarray(data["usage"], dtype=int)
-        brain.node_usage = np.asarray(data.get("node_usage", [0] * brain.node_count), dtype=int)
+        brain.node_usage = np.asarray(
+            data.get("node_usage", [0] * brain.node_count), dtype=int
+        )
+        brain._rebuild_sparse_cache()
         return brain
