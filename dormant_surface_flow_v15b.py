@@ -24,10 +24,10 @@ class FrozenBridge:
 class ExperienceBridgeFacilitationBrain(MultiExperienceTransitionBrain):
     """v15b: transient, experience-derived facilitation between frozen clusters.
 
-    Bridges never add graph edges, never change stored weights, and never boost a
-    dormant or disabled pathway.  A matching previous experience cluster merely
-    gives enabled, non-dormant edges in the learned target cluster a tiny
-    propagation multiplier for the next observation.
+    Bridges never add graph edges, never change stored weights, never assist the
+    teacher phase, and never boost a dormant or disabled pathway. A matching
+    previous experience cluster merely gives enabled, non-dormant edges in the
+    learned target cluster a tiny propagation multiplier during observation.
     """
 
     def __init__(
@@ -46,17 +46,21 @@ class ExperienceBridgeFacilitationBrain(MultiExperienceTransitionBrain):
         self.bridge_facilitation = float(bridge_facilitation)
         self.bridge_mode = bridge_mode
         self.bridge_random_seed = int(bridge_random_seed)
+        self.bridge_runtime_enabled = False
         self.frozen_clusters: list[tuple[Edge, ...]] = []
         self.frozen_bridges: list[FrozenBridge] = []
         self.previous_frozen_cluster: int | None = None
         self.previous_task: str | None = None
-        self.active_bridge_targets: set[Edge] = set()
+        self.active_bridge_targets: dict[Edge, float] = {}
         self.active_bridge_count = 0
         self.bridge_application_events = 0
         self.bridge_target_edge_opportunities = 0
         self.bridge_target_edges_traversed = 0
         self.bridge_dormant_edges_skipped = 0
         self.bridge_disabled_edges_skipped = 0
+
+    def set_bridge_runtime(self, enabled: bool) -> None:
+        self.bridge_runtime_enabled = bool(enabled)
 
     def freeze_experience_bridges(self) -> None:
         clusters = [tuple(cluster) for cluster in self.derive_experience_clusters()]
@@ -81,17 +85,10 @@ class ExperienceBridgeFacilitationBrain(MultiExperienceTransitionBrain):
         for row in candidates:
             source_id = int(row["source_cluster"])
             learned_target_id = int(row["target_cluster"])
-            target_id = (
-                learned_target_id
-                if self.bridge_mode == "learned"
-                else target_map[learned_target_id]
-            )
-            if source_id >= len(clusters) or target_id >= len(clusters):
-                continue
-            if source_id == target_id:
+            target_id = learned_target_id if self.bridge_mode == "learned" else target_map[learned_target_id]
+            if source_id >= len(clusters) or target_id >= len(clusters) or source_id == target_id:
                 continue
             lift = max(1.0, float(row["transition_lift"]))
-            # Keep the intervention tiny: base 2%, softly scaled and capped at 2%.
             strength = self.bridge_facilitation * min(1.0, (lift - 1.0) / 0.5)
             if strength <= 0.0:
                 continue
@@ -112,42 +109,42 @@ class ExperienceBridgeFacilitationBrain(MultiExperienceTransitionBrain):
     def _assign_frozen_cluster(self, contributions: dict[Edge, float]) -> int | None:
         if not self.frozen_clusters:
             return None
-        scores = [
-            float(sum(contributions.get(edge, 0.0) for edge in cluster))
-            for cluster in self.frozen_clusters
-        ]
+        scores = [float(sum(contributions.get(edge, 0.0) for edge in cluster)) for cluster in self.frozen_clusters]
         if not scores or max(scores) <= 0.0:
             return None
         return int(np.argmax(scores))
 
     def _prepare_active_bridge_targets(self) -> None:
-        self.active_bridge_targets = set()
+        self.active_bridge_targets = {}
         self.active_bridge_count = 0
+        if not self.bridge_runtime_enabled:
+            return
         identity = self.current_experience_identity
         if identity is None or self.previous_frozen_cluster is None or self.previous_task is None:
             return
         for bridge in self.frozen_bridges:
             if bridge.source_cluster != self.previous_frozen_cluster:
                 continue
-            if bridge.source_task != self.previous_task:
-                continue
-            if bridge.target_task != identity.task_name:
+            if bridge.source_task != self.previous_task or bridge.target_task != identity.task_name:
                 continue
             self.active_bridge_count += 1
-            self.active_bridge_targets.update(bridge.target_edges)
+            for edge in bridge.target_edges:
+                self.active_bridge_targets[edge] = max(
+                    self.active_bridge_targets.get(edge, 0.0), bridge.strength
+                )
 
     def _effective_weight_matrix(self) -> np.ndarray:
         effective = super()._effective_weight_matrix()
         if not self.active_bridge_targets:
             return effective
-        for source, target in self.active_bridge_targets:
+        for (source, target), strength in self.active_bridge_targets.items():
             if not self.edge_enabled[source, target]:
                 self.bridge_disabled_edges_skipped += 1
                 continue
             if self.pathway_state[source, target] == PATHWAY_DORMANT:
                 self.bridge_dormant_edges_skipped += 1
                 continue
-            effective[source, target] *= 1.0 + self.bridge_facilitation
+            effective[source, target] *= 1.0 + strength
             self.bridge_target_edge_opportunities += 1
         return effective
 
@@ -158,9 +155,7 @@ class ExperienceBridgeFacilitationBrain(MultiExperienceTransitionBrain):
         result = super().propagate(*args, **kwargs)
         if self.active_bridge_targets:
             traversed = set(result.traversed_edges)
-            self.bridge_target_edges_traversed += len(
-                traversed.intersection(self.active_bridge_targets)
-            )
+            self.bridge_target_edges_traversed += len(traversed.intersection(self.active_bridge_targets))
         return result
 
     def _record_activity_snapshot(self, peak_contributions: np.ndarray) -> None:
