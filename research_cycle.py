@@ -58,17 +58,22 @@ def run_experience(text: str, learn: bool = True) -> dict:
     }
 
 
-def run_reflection(trace_id: int | None = None, learn: bool = True) -> dict:
+def run_reflection(
+    trace_id: int | None = None,
+    learn: bool = True,
+    legacy: bool = False,
+    replay_strength: float = 0.28,
+) -> dict:
     core = SphereBrain.load(BRAIN_FILE)
     traces = TraceStore(DB_FILE)
-    reflection = ReflectionEngine()
+    reflection = ReflectionEngine(replay_strength=replay_strength)
     decoder = NumericDecoder()
 
     trace = traces.get_trace(trace_id) if trace_id is not None else traces.latest_trace("experience")
     if trace is None:
         raise ValueError("Reflection対象のTraceがありません。")
 
-    reflection_input = reflection.build_input(trace, learn=learn)
+    reflection_input = reflection.build_input(trace, learn=learn, legacy=legacy)
     result = reflection.replay(core, reflection_input)
     if result is None:
         raise ValueError("Traceから数値刺激を生成できませんでした。")
@@ -82,11 +87,15 @@ def run_reflection(trace_id: int | None = None, learn: bool = True) -> dict:
     decoded = decoder.decode(result)
     core.save(BRAIN_FILE)
 
+    reflection_summary = asdict(reflection_input)
+    reflection_summary["trace_step_count"] = len(reflection_input.trace_steps)
+    reflection_summary.pop("trace_steps", None)
+
     return {
         "layer_flow": ["Trace", "Reflection", "Core", "Trace", "Decoder"],
         "source_trace_id": reflection_input.trace_id,
         "trace_id": reflected_trace_id,
-        "reflection_input": asdict(reflection_input),
+        "reflection_input": reflection_summary,
         "decoded": asdict(decoded),
     }
 
@@ -104,10 +113,26 @@ if __name__ == "__main__":
     reflection = sub.add_parser("reflect")
     reflection.add_argument("--trace-id", type=int)
     reflection.add_argument("--no-learn", action="store_true")
+    reflection.add_argument(
+        "--legacy",
+        action="store_true",
+        help="時間順再生ではなく、旧方式の最終ノード一斉入力を使う",
+    )
+    reflection.add_argument(
+        "--strength",
+        type=float,
+        default=0.28,
+        help="時間順Reflectionの再刺激強度（0より大きく1以下）",
+    )
 
     args = parser.parse_args()
     if args.command == "experience":
         output = run_experience(args.text, learn=not args.no_learn)
     else:
-        output = run_reflection(args.trace_id, learn=not args.no_learn)
+        output = run_reflection(
+            args.trace_id,
+            learn=not args.no_learn,
+            legacy=args.legacy,
+            replay_strength=args.strength,
+        )
     print(json.dumps(output, ensure_ascii=False, indent=2))
