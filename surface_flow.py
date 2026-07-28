@@ -26,15 +26,9 @@ class SurfaceFlowResult:
 class SurfaceFlowBrain:
     """Language-independent experimental SphereBrain core.
 
-    The core knows only:
-    - numeric activity on input-surface nodes,
-    - multi-path propagation through the spherical graph,
-    - numeric activity on output-surface nodes,
-    - directed weights, fatigue, usage and reinforcement,
-    - an optional short-term activation field left by recent experience.
-
-    Text, images, sounds and scalar values must be converted into surface
-    patterns by external encoders. The core never receives semantic labels.
+    The core knows only numeric surface activity, graph propagation, pathway
+    weights, fatigue, usage, optional short-term activity, and optional
+    bidirectional plasticity. External encoders alone know text or scalar labels.
     """
 
     def __init__(
@@ -56,6 +50,13 @@ class SurfaceFlowBrain:
         activation_field_influence: float = 0.05,
         activation_field_decay: float = 0.90,
         activation_field_gain: float = 0.10,
+        bidirectional_plasticity_enabled: bool = False,
+        recent_activity_decay: float = 0.90,
+        unused_activity_threshold: float = 0.015,
+        unused_weakening_rate: float = 0.00015,
+        overuse_activity_threshold: float = 0.35,
+        overuse_weakening_rate: float = 0.0020,
+        minimum_edge_weight: float = 0.02,
     ) -> None:
         self.node_count = node_count
         self.neighbors_per_node = neighbors_per_node
@@ -74,7 +75,14 @@ class SurfaceFlowBrain:
         self.activation_field_influence = activation_field_influence
         self.activation_field_decay = activation_field_decay
         self.activation_field_gain = activation_field_gain
-        self._validate_activation_field_parameters()
+        self.bidirectional_plasticity_enabled = bidirectional_plasticity_enabled
+        self.recent_activity_decay = recent_activity_decay
+        self.unused_activity_threshold = unused_activity_threshold
+        self.unused_weakening_rate = unused_weakening_rate
+        self.overuse_activity_threshold = overuse_activity_threshold
+        self.overuse_weakening_rate = overuse_weakening_rate
+        self.minimum_edge_weight = minimum_edge_weight
+        self._validate_parameters()
         self.rng = np.random.default_rng(seed)
 
         self.positions = self._generate_points_in_sphere(node_count)
@@ -83,7 +91,9 @@ class SurfaceFlowBrain:
         self.usage = np.zeros((node_count, node_count), dtype=int)
         self.node_usage = np.zeros(node_count, dtype=int)
         self.activation_field = np.zeros(node_count, dtype=float)
+        self.recent_edge_activity = np.zeros((node_count, node_count), dtype=float)
         self._connect_nearest_nodes()
+        self.edge_enabled = self.adjacency.copy()
 
         radii = np.linalg.norm(self.positions, axis=1)
         surface = radii >= surface_radius
@@ -92,26 +102,49 @@ class SurfaceFlowBrain:
         if len(self.input_nodes) < 4 or len(self.output_nodes) < 4:
             raise ValueError("Not enough surface nodes; lower surface_radius or increase node_count.")
 
-    def _validate_activation_field_parameters(self) -> None:
-        for name, value in (
+    def _validate_parameters(self) -> None:
+        unit_values = (
             ("activation_field_influence", self.activation_field_influence),
             ("activation_field_decay", self.activation_field_decay),
             ("activation_field_gain", self.activation_field_gain),
-        ):
+            ("recent_activity_decay", self.recent_activity_decay),
+            ("unused_activity_threshold", self.unused_activity_threshold),
+            ("overuse_activity_threshold", self.overuse_activity_threshold),
+        )
+        for name, value in unit_values:
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be in [0, 1]")
+        for name, value in (
+            ("unused_weakening_rate", self.unused_weakening_rate),
+            ("overuse_weakening_rate", self.overuse_weakening_rate),
+            ("minimum_edge_weight", self.minimum_edge_weight),
+        ):
+            if value < 0.0:
+                raise ValueError(f"{name} must be non-negative")
 
     def reset_activation_field(self) -> None:
-        """Forget all short-term activity without changing learned pathways."""
         self.activation_field.fill(0.0)
 
     def activation_field_stats(self) -> dict[str, float]:
-        """Return compact diagnostics for experiments and monitoring."""
         return {
             "mean": float(np.mean(self.activation_field)),
             "max": float(np.max(self.activation_field)),
             "active_ratio": float(np.mean(self.activation_field > 1e-6)),
             "energy": float(np.sum(self.activation_field)),
+        }
+
+    def pathway_stats(self) -> dict[str, float]:
+        connected = self.adjacency
+        enabled = self.edge_enabled
+        enabled_weights = self.weights[enabled]
+        return {
+            "connected_edges": float(np.count_nonzero(connected)),
+            "enabled_edges": float(np.count_nonzero(enabled)),
+            "disabled_edges": float(np.count_nonzero(connected & ~enabled)),
+            "mean_enabled_weight": (
+                float(np.mean(enabled_weights)) if enabled_weights.size else 0.0
+            ),
+            "max_recent_activity": float(np.max(self.recent_edge_activity)),
         }
 
     def _update_activation_field(self, trace: np.ndarray) -> None:
@@ -176,17 +209,6 @@ class SurfaceFlowBrain:
         use_activation_field: bool | None = None,
         update_activation_field: bool = False,
     ) -> SurfaceFlowResult:
-        """Propagate a numeric surface pattern through many paths at once.
-
-        Every active directed edge contributes. Incoming contributions are
-        combined as a bounded probabilistic union rather than selecting only
-        the strongest parent. Thus several weak routes can jointly activate a
-        node while all activities remain in [0, 1].
-
-        When the short-term activation field is enabled, a weak residue from
-        recent experience tilts the initial activity landscape. Updating the
-        field is explicit so measurements can observe without contaminating it.
-        """
         sources = self._validate_pattern(input_pattern, self.input_nodes, "input_pattern")
         activation = np.zeros(self.node_count, dtype=float)
         fatigue = np.zeros(self.node_count, dtype=float)
@@ -198,9 +220,7 @@ class SurfaceFlowBrain:
             use_activation_field = self.activation_field_enabled
         if use_activation_field and self.activation_field_enabled:
             field_activity = np.clip(
-                self.activation_field * self.activation_field_influence,
-                0.0,
-                1.0,
+                self.activation_field * self.activation_field_influence, 0.0, 1.0
             )
             activation = 1.0 - (1.0 - activation) * (1.0 - field_activity)
 
@@ -214,7 +234,7 @@ class SurfaceFlowBrain:
         for _ in range(steps):
             effective = activation * (1.0 - np.clip(fatigue, 0.0, 0.95))
             contributions = effective[:, None] * self.weights * self.transmission_gain
-            contributions[~self.adjacency] = 0.0
+            contributions[~self.edge_enabled] = 0.0
             contributions = np.clip(contributions, 0.0, 1.0 - 1e-12)
 
             next_activation = 1.0 - np.prod(1.0 - contributions, axis=0)
@@ -258,18 +278,6 @@ class SurfaceFlowBrain:
         target_pattern: SurfacePattern,
         update_activation_field: bool = False,
     ) -> set[tuple[int, int]]:
-        """Learn one numeric input-target experience with route diversity.
-
-        Input and target populations are paired by activity rank. Route search
-        still prefers strong connections, but repeatedly used edges and nodes
-        acquire a congestion cost. Paths already selected during the same
-        experience receive an additional temporary cost. Repeated experiences
-        therefore form a family of related routes instead of one dominant trunk.
-
-        If requested, the teacher-guided route also leaves a decaying short-term
-        activity trace. Pathway weights remain long-term memory; this field is
-        temporary state.
-        """
         inputs = self._validate_pattern(input_pattern, self.input_nodes, "input_pattern")
         targets = self._validate_pattern(target_pattern, self.output_nodes, "target_pattern")
 
@@ -293,10 +301,7 @@ class SurfaceFlowBrain:
             for node, value in targets.items():
                 trace[node] = max(trace[node], value)
             for source, target in edges:
-                route_activity = min(
-                    1.0,
-                    0.5 * (self.weights[source, target] + self.weights[target, source]),
-                )
+                route_activity = min(1.0, self.weights[source, target])
                 trace[source] = max(trace[source], route_activity)
                 trace[target] = max(trace[target], route_activity)
             self._update_activation_field(trace)
@@ -320,7 +325,7 @@ class SurfaceFlowBrain:
                 break
             if cost != costs.get(node):
                 continue
-            for neighbor_raw in self.adjacency[node].nonzero()[0]:
+            for neighbor_raw in self.edge_enabled[node].nonzero()[0]:
                 neighbor = int(neighbor_raw)
                 weight_cost = 1.0 / max(float(self.weights[node, neighbor]), 1e-9)
                 edge_congestion = self.route_usage_penalty * np.log1p(
@@ -351,9 +356,35 @@ class SurfaceFlowBrain:
         path.reverse()
         return path
 
+    def _apply_bidirectional_plasticity(self, reinforced: set[tuple[int, int]]) -> None:
+        if not self.bidirectional_plasticity_enabled:
+            self.weights[self.edge_enabled] *= 1.0 - self.decay_rate
+            return
+
+        self.recent_edge_activity *= self.recent_activity_decay
+        for source, target in reinforced:
+            self.recent_edge_activity[source, target] += 1.0
+        self.recent_edge_activity = np.clip(self.recent_edge_activity, 0.0, 1.0)
+
+        enabled = self.edge_enabled
+        recent = self.recent_edge_activity
+        unused = enabled & (recent < self.unused_activity_threshold)
+        overused = enabled & (recent > self.overuse_activity_threshold)
+
+        self.weights[unused] *= 1.0 - self.unused_weakening_rate
+        excess = np.zeros_like(recent)
+        excess[overused] = (
+            recent[overused] - self.overuse_activity_threshold
+        ) / max(1.0 - self.overuse_activity_threshold, 1e-9)
+        self.weights[overused] *= 1.0 - self.overuse_weakening_rate * excess[overused]
+        self.weights[enabled] = np.maximum(self.weights[enabled], self.minimum_edge_weight)
+
     def _reinforce(self, edges: Iterable[tuple[int, int]]) -> None:
-        self.weights[self.adjacency] *= 1.0 - self.decay_rate
-        for source, target in edges:
+        edge_set = set(edges)
+        self._apply_bidirectional_plasticity(edge_set)
+        for source, target in edge_set:
+            if not self.edge_enabled[source, target]:
+                continue
             current = self.weights[source, target]
             saturation = 1.0 / (1.0 + 0.08 * self.usage[source, target])
             delta = self.learning_rate * saturation * (1.0 - current)
@@ -361,6 +392,41 @@ class SurfaceFlowBrain:
             self.usage[source, target] += 1
             self.node_usage[source] += 1
             self.node_usage[target] += 1
+
+    def lesion_most_used_edges(
+        self,
+        fraction: float = 0.05,
+        bidirectional: bool = True,
+    ) -> list[tuple[int, int]]:
+        """Disable the most-used active pathways and return disabled directions."""
+        if not 0.0 < fraction <= 1.0:
+            raise ValueError("fraction must be in (0, 1]")
+        candidates = np.argwhere(self.edge_enabled & (self.usage > 0))
+        if candidates.size == 0:
+            return []
+        ranked = sorted(
+            ((int(s), int(t)) for s, t in candidates),
+            key=lambda edge: (
+                int(self.usage[edge]),
+                float(self.weights[edge]),
+            ),
+            reverse=True,
+        )
+        count = max(1, int(np.ceil(len(ranked) * fraction)))
+        disabled: set[tuple[int, int]] = set()
+        for source, target in ranked[:count]:
+            if self.edge_enabled[source, target]:
+                self.edge_enabled[source, target] = False
+                disabled.add((source, target))
+            if bidirectional and self.edge_enabled[target, source]:
+                self.edge_enabled[target, source] = False
+                disabled.add((target, source))
+        return sorted(disabled)
+
+    def restore_edges(self, edges: Iterable[tuple[int, int]]) -> None:
+        for source, target in edges:
+            if self.adjacency[source, target]:
+                self.edge_enabled[source, target] = True
 
     def output_vector(self, result: SurfaceFlowResult, max_steps: int = 24) -> np.ndarray:
         index = {node: i for i, node in enumerate(self.output_nodes)}
