@@ -3,13 +3,18 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from dormant_surface_flow import DormantSurfaceFlowBrain
+from dormant_surface_flow_v3 import RecoveryGatedDormantBrain
 from surface_flow import SurfaceFlowBrain
 from experiments.run_pathway_recovery_experiment import (
+    CANDIDATE_Y,
+    DECODER_POWER,
     LESION_FRACTION,
     PRETRAIN_EPOCHS,
     RECOVERY_EPOCHS,
@@ -17,7 +22,7 @@ from experiments.run_pathway_recovery_experiment import (
     TRAIN_X,
     Example,
     build_encoders,
-    evaluate,
+    candidate_score,
     observe,
     output_node_energy,
     train,
@@ -33,8 +38,8 @@ def build_ordinary_brain() -> SurfaceFlowBrain:
     )
 
 
-def build_dormant_brain() -> DormantSurfaceFlowBrain:
-    return DormantSurfaceFlowBrain(
+def build_dormant_brain() -> RecoveryGatedDormantBrain:
+    return RecoveryGatedDormantBrain(
         node_count=600,
         neighbors_per_node=8,
         seed=42,
@@ -46,7 +51,10 @@ def build_dormant_brain() -> DormantSurfaceFlowBrain:
         auto_reactivation_traversals=2,
         state_activity_decay=0.92,
         overuse_threshold=0.55,
-        overuse_penalty_gain=0.55,
+        # Isolate dormancy/reactivation in this experiment. Homeostatic
+        # suppression previously made trained output lower than the fixed
+        # untrained baseline and caused every decoder score to be clipped to 0.
+        overuse_penalty_gain=0.0,
         overuse_penalty_decay=0.82,
     )
 
@@ -66,30 +74,85 @@ def print_state_stats(brain: DormantSurfaceFlowBrain, label: str) -> None:
     print()
 
 
+def predict_absolute(brain, x, input_encoder, output_encoder):
+    """Decode current output energy without an obsolete untrained baseline."""
+    result = observe(brain, input_encoder.encode(x))
+    energy = output_node_energy(brain, result)
+    energy_by_node = {
+        node: float(energy[index])
+        for index, node in enumerate(brain.output_nodes)
+    }
+    scored = np.array(
+        [
+            candidate_score(energy_by_node, output_encoder.encode(float(y)))
+            for y in CANDIDATE_Y
+        ],
+        dtype=float,
+    )
+    positive = np.clip(scored, 0.0, None)
+    weights = positive**DECODER_POWER
+    total = float(np.sum(weights))
+    if total <= 1e-12:
+        prediction = 0.5
+        confidence = 0.0
+    else:
+        prediction = float(np.sum(CANDIDATE_Y * weights) / total)
+        confidence = float(np.max(weights) / total)
+    return prediction, confidence, set(result.traversed_edges)
+
+
+def evaluate_absolute(label, brain, input_encoder, output_encoder, examples):
+    errors: list[float] = []
+    traversed: set[tuple[int, int]] = set()
+    print(label)
+    for example in examples:
+        prediction, confidence, edges = predict_absolute(
+            brain,
+            example.x,
+            input_encoder,
+            output_encoder,
+        )
+        error = abs(prediction - example.y)
+        errors.append(error)
+        traversed.update(edges)
+        print(
+            f"x={example.x:.3f} expected={example.y:.3f} "
+            f"predicted={prediction:.3f} error={error:.3f} "
+            f"confidence={confidence:.4f}"
+        )
+    mae = float(np.mean(errors))
+    print(f"MAE: {mae:.4f} | traversed unique edges: {len(traversed)}")
+    print()
+    return mae, traversed
+
+
+def recovery_train(brain, input_encoder, output_encoder, examples, epochs):
+    """Let strong flow wake standby routes, then reinforce useful alternatives."""
+    for _ in range(epochs):
+        for example in examples:
+            if isinstance(brain, RecoveryGatedDormantBrain):
+                observe(brain, input_encoder.encode(example.x))
+            brain.experience(
+                input_encoder.encode(example.x),
+                output_encoder.encode(example.y),
+            )
+
+
 def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     input_encoder, output_encoder = build_encoders(brain)
     training = [Example(float(x), float(2.0 * x)) for x in TRAIN_X]
     testing = [Example(float(x), float(2.0 * x)) for x in TEST_X]
-
-    baselines = {
-        example.x: output_node_energy(
-            brain,
-            observe(brain, input_encoder.encode(example.x)),
-        )
-        for example in testing
-    }
 
     print("=" * 76)
     print(f"condition: {name}")
     print("=" * 76)
 
     train(brain, input_encoder, output_encoder, training, PRETRAIN_EPOCHS)
-    pre_mae, pre_edges = evaluate(
+    pre_mae, pre_edges = evaluate_absolute(
         "--- before lesion ---",
         brain,
         input_encoder,
         output_encoder,
-        baselines,
         testing,
     )
     if isinstance(brain, DormantSurfaceFlowBrain):
@@ -117,30 +180,34 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
     )
     print()
 
-    damaged_mae, damaged_edges = evaluate(
+    damaged_mae, damaged_edges = evaluate_absolute(
         "--- immediately after lesion ---",
         brain,
         input_encoder,
         output_encoder,
-        baselines,
         testing,
     )
 
     if isinstance(brain, DormantSurfaceFlowBrain):
         brain.set_recovery_mode(True)
-        print("recovery mode: ON (new dormancy suspended)\n")
+        print("recovery mode: ON (new dormancy suspended; strong-flow waking enabled)\n")
 
-    train(brain, input_encoder, output_encoder, training, RECOVERY_EPOCHS)
+    recovery_train(
+        brain,
+        input_encoder,
+        output_encoder,
+        training,
+        RECOVERY_EPOCHS,
+    )
 
     if isinstance(brain, DormantSurfaceFlowBrain):
         brain.set_recovery_mode(False)
 
-    recovered_mae, recovered_edges = evaluate(
+    recovered_mae, recovered_edges = evaluate_absolute(
         f"--- after {RECOVERY_EPOCHS} recovery epochs ---",
         brain,
         input_encoder,
         output_encoder,
-        baselines,
         testing,
     )
 
@@ -179,19 +246,20 @@ def run_condition(name: str, brain: SurfaceFlowBrain) -> None:
 
 
 def main() -> None:
-    print("SphereBrain protected/dormant/reactivating pathway experiment v2")
+    print("SphereBrain protected/dormant/reactivating pathway experiment v3")
     print("task: y = 2x")
     print(
         f"pretrain={PRETRAIN_EPOCHS} epochs, lesion={LESION_FRACTION:.0%}, "
         f"recovery={RECOVERY_EPOCHS} epochs"
     )
     print("dormant transmission=40%, dormancy delay=4x, protection=2x")
-    print("new dormancy is suspended during recovery")
-    print("strong repeated propagation can automatically reactivate standby routes")
+    print("evaluation is read-only; automatic waking is recovery-gated")
+    print("decoder uses current absolute output energy, not a stale baseline")
+    print("homeostatic penalty is disabled to isolate dormancy/reactivation")
     print()
 
     run_condition("ordinary reinforcement", build_ordinary_brain())
-    run_condition("protected + dormant + reactivation v2", build_dormant_brain())
+    run_condition("protected + dormant + reactivation v3", build_dormant_brain())
 
 
 if __name__ == "__main__":
