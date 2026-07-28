@@ -3,11 +3,14 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import numpy as np
+
 from surface_flow import SurfaceFlowBrain, SurfaceFlowResult
 
 
-CHECKPOINTS = {0, 1, 2, 5, 10, 20}
+CHECKPOINTS = {0, 1, 2, 5, 10, 20, 30, 50, 75, 100}
 STIMULUS = "空は青い"
+TOP_PATHS = 12
 
 
 def summarize(result: SurfaceFlowResult) -> dict[str, object]:
@@ -31,25 +34,42 @@ def summarize(result: SurfaceFlowResult) -> dict[str, object]:
     }
 
 
+def strongest_paths(brain: SurfaceFlowBrain, limit: int = TOP_PATHS) -> list[tuple[int, int, int, float]]:
+    used = np.argwhere(brain.usage > 0)
+    paths = [
+        (
+            int(source),
+            int(target),
+            int(brain.usage[source, target]),
+            float(brain.weights[source, target]),
+        )
+        for source, target in used
+    ]
+    paths.sort(key=lambda item: (item[2], item[3]), reverse=True)
+    return paths[:limit]
+
+
 def main() -> None:
     brain = SurfaceFlowBrain(node_count=600, neighbors_per_node=8, seed=42)
     sources = brain.stimulus_to_inputs(STIMULUS)
     snapshots: dict[int, SurfaceFlowResult] = {}
+    path_snapshots: dict[int, list[tuple[int, int, int, float]]] = {}
 
-    # Learning before any experience: the sphere's initial response.
     snapshots[0] = brain.propagate(sources, learn=False)
+    path_snapshots[0] = strongest_paths(brain)
 
-    for experience_no in range(1, 21):
-        learned = brain.propagate(sources, learn=True)
+    for experience_no in range(1, 101):
+        brain.propagate(sources, learn=True)
         if experience_no in CHECKPOINTS:
-            # Observe without further learning so measurement does not alter the brain.
             snapshots[experience_no] = brain.propagate(sources, learn=False)
+            path_snapshots[experience_no] = strongest_paths(brain)
 
-    final_result = snapshots[20]
+    final_result = snapshots[100]
     rows: list[dict[str, object]] = []
+    path_rows: list[dict[str, object]] = []
 
-    print(f'stimulus: {STIMULUS}')
-    print(f'input nodes: {sources}')
+    print(f"stimulus: {STIMULUS}")
+    print(f"input nodes: {sources}")
     print()
 
     for checkpoint in sorted(snapshots):
@@ -60,26 +80,52 @@ def main() -> None:
         summary["similarity_to_final"] = brain.output_similarity(result, final_result)
         rows.append(summary)
 
-        print(f'--- experience {checkpoint:>2} ---')
-        print('output nodes:', result.output_nodes)
-        print('first output step:', summary['first_output_step'])
-        print('output energy:', round(float(summary['output_energy']), 4))
-        print('peak output:', round(float(summary['peak_output']), 4))
-        print('traversed edges:', summary['traversed_edge_count'])
-        print('similarity to initial:', round(float(summary['similarity_to_initial']), 4))
-        print('similarity to final:', round(float(summary['similarity_to_final']), 4))
+        print(f"--- experience {checkpoint:>3} ---")
+        print("output nodes:", result.output_nodes)
+        print("first output step:", summary["first_output_step"])
+        print("output energy:", round(float(summary["output_energy"]), 4))
+        print("peak output:", round(float(summary["peak_output"]), 4))
+        print("traversed edges:", summary["traversed_edge_count"])
+        print("active nodes:", summary["active_node_count"])
+        print("similarity to initial:", round(float(summary["similarity_to_initial"]), 4))
+        print("similarity to final:", round(float(summary["similarity_to_final"]), 4))
+        print("strongest learned paths:")
+
+        paths = path_snapshots[checkpoint]
+        if not paths:
+            print("  none")
+        for rank, (source, target, usage, weight) in enumerate(paths, start=1):
+            print(f"  {rank:>2}. {source} -> {target}  usage={usage:>3}  weight={weight:.4f}")
+            path_rows.append(
+                {
+                    "experience_no": checkpoint,
+                    "rank": rank,
+                    "source": source,
+                    "target": target,
+                    "usage": usage,
+                    "weight": weight,
+                }
+            )
         print()
 
     output_dir = Path(__file__).resolve().parent / "results"
     output_dir.mkdir(exist_ok=True)
-    csv_path = output_dir / "sky_blue_learning_trace.csv"
+    summary_csv = output_dir / "sky_blue_learning_trace_100.csv"
+    paths_csv = output_dir / "sky_blue_strongest_paths_100.csv"
 
-    with csv_path.open("w", newline="", encoding="utf-8-sig") as file:
+    with summary_csv.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
 
-    print('CSV:', csv_path)
+    with paths_csv.open("w", newline="", encoding="utf-8-sig") as file:
+        fieldnames = ["experience_no", "rank", "source", "target", "usage", "weight"]
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(path_rows)
+
+    print("Summary CSV:", summary_csv)
+    print("Paths CSV:", paths_csv)
 
 
 if __name__ == "__main__":
