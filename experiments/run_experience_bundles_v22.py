@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import sys
+import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from surface_encoders import TextSurfaceEncoder
 from surface_flow import SurfaceFlowBrain
 
 STEPS = 24
+EPOCHS = 5
 ACTIVE_THRESHOLD = 1e-5
 RESIDUAL_FRACTION = 0.02
 MAX_BRANCHES = 8
@@ -163,7 +166,6 @@ def adaptive_trace(
 
             step_branch_counts.append(branch_count)
             step_selected_edges += branch_count
-
             selected_total = float(np.sum(selected_weights))
             if selected_total <= 0.0:
                 continue
@@ -175,8 +177,9 @@ def adaptive_trace(
                 enabled = np.flatnonzero(brain.edge_enabled[source])
                 residual = np.setdiff1d(enabled, selected, assume_unique=False)
                 if residual.size > 0:
-                    residual_weights = np.asarray(brain.weights[source, residual], dtype=float)
-                    residual_weights = np.clip(residual_weights, 0.0, None)
+                    residual_weights = np.clip(
+                        np.asarray(brain.weights[source, residual], dtype=float), 0.0, None
+                    )
                     residual_total = float(np.sum(residual_weights))
                     if residual_total > 0.0:
                         next_activation[residual] += (
@@ -232,44 +235,64 @@ def decode(
     return ranked[:limit]
 
 
-def learn_bundle(
-    brain: SurfaceFlowBrain,
-    experience: Experience,
-    input_patterns: dict[str, dict[int, float]],
-    output_patterns: dict[str, dict[int, float]],
-) -> int:
-    events = 0
-    for source in experience.elements:
-        for target in experience.elements:
-            if source == target:
-                continue
-            brain.experience(input_patterns[source], output_patterns[target])
-            events += 1
-    return events
+def pair_counts(mode: str) -> Counter[tuple[str, str]]:
+    """Collect repeated word pairs before path search.
+
+    Each unique source-target pair is searched only once per epoch. Its original
+    repetition count is then preserved by reinforcing the selected route again.
+    """
+    pairs: Counter[tuple[str, str]] = Counter()
+    for experience in EXPERIENCES:
+        if mode == "bundle":
+            pairs.update(
+                (source, target)
+                for source in experience.elements
+                for target in experience.elements
+                if source != target
+            )
+        elif mode == "chain":
+            pairs.update(zip(experience.elements, experience.elements[1:]))
+        else:
+            raise ValueError(f"Unsupported training mode: {mode}")
+    return pairs
 
 
-def learn_chain_control(
+def reinforce_pair(
     brain: SurfaceFlowBrain,
-    experience: Experience,
-    input_patterns: dict[str, dict[int, float]],
-    output_patterns: dict[str, dict[int, float]],
-) -> int:
-    events = 0
-    for source, target in zip(experience.elements, experience.elements[1:]):
-        brain.experience(input_patterns[source], output_patterns[target])
-        events += 1
-    return events
+    source_pattern: dict[int, float],
+    target_pattern: dict[int, float],
+    repetitions: int,
+) -> None:
+    """Search routes once, then reuse those routes for repeated co-occurrence."""
+    inputs = brain._validate_pattern(source_pattern, brain.input_nodes, "input_pattern")
+    targets = brain._validate_pattern(target_pattern, brain.output_nodes, "target_pattern")
+    input_rank = sorted(inputs, key=lambda node: inputs[node], reverse=True)
+    target_rank = sorted(targets, key=lambda node: targets[node], reverse=True)
+    pair_count = max(len(input_rank), len(target_rank))
+    edges: set[tuple[int, int]] = set()
+
+    for index in range(pair_count):
+        source = input_rank[index % len(input_rank)]
+        target = target_rank[index % len(target_rank)]
+        path = brain._shortest_path(source, target, temporarily_used=edges)
+        edges.update(zip(path, path[1:]))
+
+    for _ in range(repetitions):
+        brain._reinforce(edges)
 
 
 def train(
     mode: str,
-    epochs: int = 30,
+    epochs: int = EPOCHS,
 ) -> tuple[
     SurfaceFlowBrain,
     dict[str, dict[int, float]],
     dict[str, dict[int, float]],
     int,
+    int,
+    float,
 ]:
+    started = time.perf_counter()
     brain = SurfaceFlowBrain(
         node_count=600,
         neighbors_per_node=8,
@@ -283,22 +306,54 @@ def train(
     input_patterns = {word: input_encoder.encode(word) for word in words}
     output_patterns = {word: output_encoder.encode(word) for word in words}
 
+    counts = pair_counts(mode)
+    unique_pairs = list(counts.items())
+    raw_events_per_epoch = sum(counts.values())
+    total_raw_events = raw_events_per_epoch * epochs
+    total_searches = len(unique_pairs) * epochs
     rng = np.random.default_rng(2202)
-    total_events = 0
-    for _ in range(epochs):
-        for index in rng.permutation(len(EXPERIENCES)):
-            experience = EXPERIENCES[int(index)]
-            if mode == "bundle":
-                total_events += learn_bundle(
-                    brain, experience, input_patterns, output_patterns
+
+    print(
+        f"\n[{mode}] {epochs} epochs / "
+        f"{len(unique_pairs)} unique pairs per epoch / "
+        f"{raw_events_per_epoch} original events per epoch"
+    )
+
+    for epoch in range(1, epochs + 1):
+        epoch_started = time.perf_counter()
+        order = rng.permutation(len(unique_pairs))
+        for position, index_raw in enumerate(order, start=1):
+            (source, target), repetitions = unique_pairs[int(index_raw)]
+            reinforce_pair(
+                brain,
+                input_patterns[source],
+                output_patterns[target],
+                repetitions,
+            )
+            if position % 50 == 0 or position == len(unique_pairs):
+                percent = position / len(unique_pairs) * 100.0
+                print(
+                    f"  epoch {epoch}/{epochs}: "
+                    f"{position}/{len(unique_pairs)} pairs ({percent:5.1f}%)",
+                    end="\r" if position < len(unique_pairs) else "\n",
+                    flush=True,
                 )
-            elif mode == "chain":
-                total_events += learn_chain_control(
-                    brain, experience, input_patterns, output_patterns
-                )
-            else:
-                raise ValueError(f"Unsupported training mode: {mode}")
-    return brain, input_patterns, output_patterns, total_events
+        epoch_elapsed = time.perf_counter() - epoch_started
+        total_elapsed = time.perf_counter() - started
+        print(
+            f"  completed epoch {epoch}/{epochs} in {epoch_elapsed:.2f}s "
+            f"(total {total_elapsed:.2f}s)"
+        )
+
+    elapsed = time.perf_counter() - started
+    return (
+        brain,
+        input_patterns,
+        output_patterns,
+        total_raw_events,
+        total_searches,
+        elapsed,
+    )
 
 
 def trace_all(
@@ -331,43 +386,51 @@ def shared_context_score(traces: dict[str, TraceResult]) -> float:
     )
     similarities = []
     for left, right in pairs:
-        left_final = traces[left].history[-1]
-        right_final = traces[right].history[-1]
-        similarities.append(cosine(left_final, right_final))
+        similarities.append(cosine(traces[left].history[-1], traces[right].history[-1]))
     return float(np.mean(similarities))
 
 
 def main() -> None:
-    print("SphereBrain v22a — Independent Experience Bundles")
-    print("One experience contains nouns, qualities, actions, sensations, and context together.")
-    print("The experiment is self-contained and does not import earlier experiment scripts.\n")
+    whole_started = time.perf_counter()
+    print("SphereBrain v22b — Fast Experience Bundles")
+    print("Words remain observer labels; the core receives numeric surface patterns only.")
+    print(f"Quick observation setting: {EPOCHS} epochs instead of 30.")
+    print("Repeated source-target pairs reuse one route search per epoch.\n")
 
     results = {}
     for mode in ("chain", "bundle"):
-        brain, inputs, outputs, events = train(mode)
+        brain, inputs, outputs, events, searches, elapsed = train(mode)
+        print(f"  tracing {len(QUERY)} probes...", flush=True)
+        trace_started = time.perf_counter()
         traces = trace_all(brain, inputs)
-        results[mode] = (brain, outputs, traces, events)
+        trace_elapsed = time.perf_counter() - trace_started
+        print(f"  trace completed in {trace_elapsed:.2f}s")
+        results[mode] = (brain, outputs, traces, events, searches, elapsed + trace_elapsed)
 
-    print(f"{'mode':<10} {'events':>8} {'shared context':>16} {'mean active':>13}")
-    print("-" * 54)
+    print(
+        f"\n{'mode':<10} {'events':>8} {'searches':>10} "
+        f"{'seconds':>10} {'shared context':>16} {'mean active':>13}"
+    )
+    print("-" * 76)
     for mode in ("chain", "bundle"):
-        _brain, _outputs, traces, events = results[mode]
+        _brain, _outputs, traces, events, searches, elapsed = results[mode]
         shared = shared_context_score(traces)
         active = float(
             np.mean([np.count_nonzero(trace.history[-1]) for trace in traces.values()])
         )
-        print(f"{mode:<10} {events:>8} {shared:>16.3f} {active:>13.1f}")
+        print(
+            f"{mode:<10} {events:>8} {searches:>10} {elapsed:>10.2f} "
+            f"{shared:>16.3f} {active:>13.1f}"
+        )
 
     print("\nHuman-observer decoding after propagation")
     print("-" * 110)
     for mode in ("chain", "bundle"):
-        brain, outputs, traces, _events = results[mode]
+        brain, outputs, traces, _events, _searches, _elapsed = results[mode]
         print(f"\n{mode}")
         for word in QUERY:
             matches = top_matches(brain, traces[word], outputs)
-            shown = ", ".join(
-                f"{candidate}:{score:.3f}" for candidate, score in matches
-            )
+            shown = ", ".join(f"{candidate}:{score:.3f}" for candidate, score in matches)
             print(f"  {word:<8} -> {shown}")
 
     print("\nExperience definitions")
@@ -379,7 +442,9 @@ def main() -> None:
     print("1. Bundle order has no meaning: every element is paired with every other element.")
     print("2. SphereBrain is not told noun, verb, adjective, truth, or expected-answer labels.")
     print("3. Decoded words are observer labels used only after internal propagation.")
-    print("4. This tests concept-like co-occurrence structure, not real sensory grounding yet.")
+    print("4. Route reuse reduces computation; it does not claim biological equivalence.")
+    print("5. This tests concept-like co-occurrence structure, not sensory grounding yet.")
+    print(f"\nTotal experiment time: {time.perf_counter() - whole_started:.2f}s")
 
 
 if __name__ == "__main__":
