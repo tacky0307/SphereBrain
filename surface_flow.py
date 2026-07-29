@@ -170,7 +170,7 @@ class SurfaceFlowBrain:
 
     def flow_bias_stats(self) -> FlowBiasStats:
         """Return statistics for currently enabled graph edges only."""
-        return self.flow_bias.stats(self.edge_enabled)
+        return self.flow_bias.stats()
 
     def effective_weights(self, use_flow_bias: bool | None = None) -> np.ndarray:
         """Return transmission weights with optional temporary flow bias applied.
