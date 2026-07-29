@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+# Allow this script to be launched directly from the experiments directory while
+# importing SphereBrain modules stored at the repository root.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from concept_observer_v17 import UnknownStateObserver
 
