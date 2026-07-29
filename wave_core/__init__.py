@@ -1,8 +1,8 @@
 """SphereBrain Wave Core experimental package.
 
 The package keeps short-time wave dynamics in ``core`` and adds optional
-experience-scale reflection in ``experience``. Existing experiments can keep
-using ``SphereWaveCore`` without enabling the longer learning time scale.
+experience-scale reflection and observation layers. Existing experiments can
+keep using ``SphereWaveCore`` without enabling those layers.
 """
 
 from .core import (
@@ -19,6 +19,7 @@ from .experience import (
     ExperienceSummary,
     StimulusEvent,
 )
+from .recall import RecallConfig, RecallPathDiagnostics
 
 __all__ = [
     "SphereWaveCore",
@@ -31,4 +32,6 @@ __all__ = [
     "ExperienceReflector",
     "ExperienceSummary",
     "StimulusEvent",
+    "RecallConfig",
+    "RecallPathDiagnostics",
 ]
