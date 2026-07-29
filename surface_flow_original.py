@@ -6,8 +6,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from flow_bias import FlowBias, FlowBiasStats
-
 
 SurfacePattern = Mapping[int, float]
 
@@ -59,12 +57,6 @@ class SurfaceFlowBrain:
         overuse_activity_threshold: float = 0.35,
         overuse_weakening_rate: float = 0.0020,
         minimum_edge_weight: float = 0.02,
-        flow_bias_enabled: bool = False,
-        flow_bias_initial: float = 1.0,
-        flow_bias_gain: float = 0.25,
-        flow_bias_decay: float = 0.92,
-        flow_bias_maximum: float = 3.0,
-        flow_bias_weight_power: float = 1.0,
     ) -> None:
         self.node_count = node_count
         self.neighbors_per_node = neighbors_per_node
@@ -90,12 +82,6 @@ class SurfaceFlowBrain:
         self.overuse_activity_threshold = overuse_activity_threshold
         self.overuse_weakening_rate = overuse_weakening_rate
         self.minimum_edge_weight = minimum_edge_weight
-        self.flow_bias_enabled = flow_bias_enabled
-        self.flow_bias_initial = flow_bias_initial
-        self.flow_bias_gain = flow_bias_gain
-        self.flow_bias_decay = flow_bias_decay
-        self.flow_bias_maximum = flow_bias_maximum
-        self.flow_bias_weight_power = flow_bias_weight_power
         self._validate_parameters()
         self.rng = np.random.default_rng(seed)
 
@@ -106,13 +92,6 @@ class SurfaceFlowBrain:
         self.node_usage = np.zeros(node_count, dtype=int)
         self.activation_field = np.zeros(node_count, dtype=float)
         self.recent_edge_activity = np.zeros((node_count, node_count), dtype=float)
-        self.flow_bias = FlowBias(
-            node_count,
-            initial_bias=self.flow_bias_initial,
-            reinforce_gain=self.flow_bias_gain,
-            decay=self.flow_bias_decay,
-            maximum_bias=self.flow_bias_maximum,
-        )
         self._connect_nearest_nodes()
         self.edge_enabled = self.adjacency.copy()
 
@@ -142,16 +121,6 @@ class SurfaceFlowBrain:
         ):
             if value < 0.0:
                 raise ValueError(f"{name} must be non-negative")
-        if self.flow_bias_initial <= 0.0:
-            raise ValueError("flow_bias_initial must be positive")
-        if self.flow_bias_gain < 0.0:
-            raise ValueError("flow_bias_gain must be non-negative")
-        if not 0.0 <= self.flow_bias_decay <= 1.0:
-            raise ValueError("flow_bias_decay must be in [0, 1]")
-        if self.flow_bias_maximum < self.flow_bias_initial:
-            raise ValueError("flow_bias_maximum must be >= flow_bias_initial")
-        if self.flow_bias_weight_power <= 0.0:
-            raise ValueError("flow_bias_weight_power must be positive")
 
     def reset_activation_field(self) -> None:
         self.activation_field.fill(0.0)
@@ -163,28 +132,6 @@ class SurfaceFlowBrain:
             "active_ratio": float(np.mean(self.activation_field > 1e-6)),
             "energy": float(np.sum(self.activation_field)),
         }
-
-    def reset_flow_bias(self) -> None:
-        """Reset temporary pathway memory without changing long-term weights."""
-        self.flow_bias.reset()
-
-    def flow_bias_stats(self) -> FlowBiasStats:
-        """Return statistics for currently enabled graph edges only."""
-        return self.flow_bias.stats(self.edge_enabled)
-
-    def effective_weights(self, use_flow_bias: bool | None = None) -> np.ndarray:
-        """Return transmission weights with optional temporary flow bias applied.
-
-        This method does not mutate the brain. ``flow_bias_weight_power`` can
-        sharpen long-term pathway differences while the temporary multiplier
-        encourages recently traversed directions.
-        """
-        if use_flow_bias is None:
-            use_flow_bias = self.flow_bias_enabled
-        base = np.power(self.weights, self.flow_bias_weight_power)
-        if use_flow_bias:
-            base = base * self.flow_bias.multiplier()
-        return np.where(self.edge_enabled, base, 0.0)
 
     def pathway_stats(self) -> dict[str, float]:
         connected = self.adjacency
@@ -261,8 +208,6 @@ class SurfaceFlowBrain:
         noise: float = 0.006,
         use_activation_field: bool | None = None,
         update_activation_field: bool = False,
-        use_flow_bias: bool | None = None,
-        update_flow_bias: bool = False,
     ) -> SurfaceFlowResult:
         sources = self._validate_pattern(input_pattern, self.input_nodes, "input_pattern")
         activation = np.zeros(self.node_count, dtype=float)
@@ -286,16 +231,9 @@ class SurfaceFlowBrain:
         history: list[list[int]] = [np.flatnonzero(activation > 0).tolist()]
         traversed: list[tuple[int, int]] = []
 
-        if use_flow_bias is None:
-            use_flow_bias = self.flow_bias_enabled
-
         for _ in range(steps):
-            if use_flow_bias and update_flow_bias:
-                self.flow_bias.decay()
-
             effective = activation * (1.0 - np.clip(fatigue, 0.0, 0.95))
-            step_weights = self.effective_weights(use_flow_bias=use_flow_bias)
-            contributions = effective[:, None] * step_weights * self.transmission_gain
+            contributions = effective[:, None] * self.weights * self.transmission_gain
             contributions[~self.edge_enabled] = 0.0
             contributions = np.clip(contributions, 0.0, 1.0 - 1e-12)
 
@@ -311,12 +249,7 @@ class SurfaceFlowBrain:
 
             edge_threshold = threshold * self.edge_activity_ratio
             active_edges = np.argwhere(contributions >= edge_threshold)
-            traversed_step = {
-                (int(source), int(target)) for source, target in active_edges
-            }
-            traversed.extend(sorted(traversed_step))
-            if use_flow_bias and update_flow_bias and traversed_step:
-                self.flow_bias.reinforce(traversed_step)
+            traversed.extend((int(source), int(target)) for source, target in active_edges)
 
             visible = np.flatnonzero((next_activation > 0) & output_mask)
             output_history.append({int(n): float(next_activation[n]) for n in visible})
