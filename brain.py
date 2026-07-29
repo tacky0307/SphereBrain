@@ -3,9 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
-import json
 import hashlib
+import json
 import numpy as np
+
+
+@dataclass
+class PathStep:
+    step_no: int
+    from_node: int
+    to_node: int
+    activation: float
+    weight_before: float
+    weight_after: float
+    selected_by: str = "max_transmission"
 
 
 @dataclass
@@ -15,6 +26,9 @@ class SignalResult:
     traversed_edges: list[tuple[int, int]]
     activation_history: list[list[int]]
     final_activation: np.ndarray
+    path_steps: list[PathStep]
+    initial_weights: dict[tuple[int, int], float]
+    final_weights: dict[tuple[int, int], float]
 
 
 class SphereBrain:
@@ -73,7 +87,7 @@ class SphereBrain:
         sources: list[int] = []
         offset = 0
         while len(sources) < count:
-            value = int.from_bytes(digest[offset:offset+4], "big")
+            value = int.from_bytes(digest[offset:offset + 4], "big")
             node = value % self.node_count
             if node not in sources:
                 sources.append(node)
@@ -104,9 +118,10 @@ class SphereBrain:
 
         activated_nodes = set(np.flatnonzero(activation > 0).tolist())
         traversed_edges: set[tuple[int, int]] = set()
+        ordered_steps: list[tuple[int, int, int, float, float]] = []
         history = [sorted(activated_nodes)]
 
-        for _ in range(steps):
+        for step_no in range(1, steps + 1):
             transmitted = activation[:, None] * self.weights
             next_activation = transmitted.max(axis=0) * 0.82
 
@@ -124,21 +139,45 @@ class SphereBrain:
                 incoming = transmitted[:, target]
                 source = int(np.argmax(incoming))
                 if incoming[source] >= threshold and self.adjacency[source, target]:
-                    traversed_edges.add(tuple(sorted((source, target))))
+                    edge = tuple(sorted((source, target)))
+                    traversed_edges.add(edge)
+                    ordered_steps.append(
+                        (step_no, source, int(target), float(next_activation[target]), float(self.weights[edge]))
+                    )
 
             activation = next_activation
             if not active_now:
                 break
 
+        initial_weights = {edge: float(self.weights[edge]) for edge in traversed_edges}
         if learn and traversed_edges:
             self._reinforce(traversed_edges, activated_nodes)
+        final_weights = {edge: float(self.weights[edge]) for edge in traversed_edges}
+
+        path_steps = [
+            PathStep(
+                step_no=step_no,
+                from_node=source,
+                to_node=target,
+                activation=activation_value,
+                weight_before=weight_before,
+                weight_after=final_weights[tuple(sorted((source, target)))],
+            )
+            for step_no, source, target, activation_value, weight_before in ordered_steps
+        ]
+        ordered_unique_edges = list(dict.fromkeys(
+            tuple(sorted((step.from_node, step.to_node))) for step in path_steps
+        ))
 
         return SignalResult(
             source_nodes=sources,
             activated_nodes=sorted(activated_nodes),
-            traversed_edges=sorted(traversed_edges),
+            traversed_edges=ordered_unique_edges,
             activation_history=history,
             final_activation=activation.copy(),
+            path_steps=path_steps,
+            initial_weights=initial_weights,
+            final_weights=final_weights,
         )
 
     def _reinforce(self, edges: Iterable[tuple[int, int]], nodes: Iterable[int]) -> None:
@@ -190,6 +229,7 @@ class SphereBrain:
     def save(self, path: str | Path) -> None:
         path = Path(path)
         data = {
+            "format_version": "1.1",
             "node_count": self.node_count,
             "neighbors_per_node": self.neighbors_per_node,
             "seed": self.seed,
