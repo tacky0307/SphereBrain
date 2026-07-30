@@ -25,12 +25,22 @@ class SphereBrain:
         seed: int = 42,
         learning_rate: float = 0.07,
         decay_rate: float = 0.0008,
+        propagation_mode: str = "focused",
+        signal_decay: float = 0.78,
+        max_branches: int = 2,
+        max_active_per_step: int = 72,
+        max_total_active_nodes: int = 100,
     ) -> None:
         self.node_count = node_count
         self.neighbors_per_node = neighbors_per_node
         self.seed = seed
         self.learning_rate = learning_rate
         self.decay_rate = decay_rate
+        self.propagation_mode = propagation_mode
+        self.signal_decay = signal_decay
+        self.max_branches = max_branches
+        self.max_active_per_step = max_active_per_step
+        self.max_total_active_nodes = max_total_active_nodes
         self.rng = np.random.default_rng(seed)
 
         self.positions = self._generate_points_in_sphere(node_count)
@@ -92,6 +102,30 @@ class SphereBrain:
         learn: bool = True,
         context_nodes: Iterable[int] | None = None,
     ) -> SignalResult:
+        if self.propagation_mode == "legacy":
+            return self._propagate_legacy(
+                source_nodes=source_nodes,
+                steps=steps,
+                threshold=threshold,
+                noise=noise,
+                learn=learn,
+                context_nodes=context_nodes,
+            )
+
+        return self._propagate_focused(
+            source_nodes=source_nodes,
+            steps=steps,
+            threshold=max(threshold, 0.18),
+            noise=min(noise, 0.006),
+            learn=learn,
+            context_nodes=context_nodes,
+        )
+
+    def _initial_activation(
+        self,
+        source_nodes: Iterable[int],
+        context_nodes: Iterable[int] | None,
+    ) -> tuple[list[int], np.ndarray]:
         sources = list(source_nodes)
         activation = np.zeros(self.node_count, dtype=float)
 
@@ -100,8 +134,115 @@ class SphereBrain:
 
         if context_nodes:
             for node in context_nodes:
-                activation[node] = max(activation[node], 0.42)
+                activation[node] = max(activation[node], 0.34)
 
+        return sources, activation
+
+    def _propagate_focused(
+        self,
+        source_nodes: Iterable[int],
+        steps: int,
+        threshold: float,
+        noise: float,
+        learn: bool,
+        context_nodes: Iterable[int] | None,
+    ) -> SignalResult:
+        sources, activation = self._initial_activation(source_nodes, context_nodes)
+        activated_nodes = set(np.flatnonzero(activation > 0).tolist())
+        traversed_edges: set[tuple[int, int]] = set()
+        history = [sorted(activated_nodes)]
+
+        for _ in range(steps):
+            active_sources = np.flatnonzero(activation > 0)
+            if active_sources.size == 0:
+                break
+
+            candidates: dict[int, tuple[float, int]] = {}
+
+            for source in active_sources:
+                neighbors = np.flatnonzero(self.adjacency[source])
+                if neighbors.size == 0:
+                    continue
+
+                scores = activation[source] * self.weights[source, neighbors]
+                branch_count = min(self.max_branches, neighbors.size)
+                best_indices = np.argpartition(scores, -branch_count)[-branch_count:]
+
+                for local_index in best_indices:
+                    target = int(neighbors[local_index])
+                    value = float(scores[local_index]) * self.signal_decay
+                    if value < threshold:
+                        continue
+                    previous = candidates.get(target)
+                    if previous is None or value > previous[0]:
+                        candidates[target] = (value, int(source))
+
+            if not candidates:
+                break
+
+            ranked = sorted(candidates.items(), key=lambda item: item[1][0], reverse=True)
+            remaining_capacity = max(0, self.max_total_active_nodes - len(activated_nodes))
+            step_limit = min(self.max_active_per_step, len(ranked))
+
+            # 既に使われたノードも再活性化できるが、新規ノード総数は上限を越えない。
+            selected: list[tuple[int, tuple[float, int]]] = []
+            new_nodes_selected = 0
+            for target, payload in ranked:
+                is_new = target not in activated_nodes
+                if is_new and new_nodes_selected >= remaining_capacity:
+                    continue
+                selected.append((target, payload))
+                if is_new:
+                    new_nodes_selected += 1
+                if len(selected) >= step_limit:
+                    break
+
+            if not selected:
+                break
+
+            next_activation = np.zeros(self.node_count, dtype=float)
+            for target, (value, source) in selected:
+                if noise:
+                    value += float(self.rng.normal(0.0, noise))
+                value = float(np.clip(value, 0.0, 1.0))
+                if value < threshold:
+                    continue
+                next_activation[target] = max(next_activation[target], value)
+                traversed_edges.add(tuple(sorted((source, target))))
+
+            active_now = np.flatnonzero(next_activation > 0).tolist()
+            if not active_now:
+                break
+
+            activated_nodes.update(active_now)
+            history.append(active_now)
+            activation = next_activation
+
+            if len(activated_nodes) >= self.max_total_active_nodes:
+                # 上限到達後は既存集合内であと1段だけ収束させる。
+                break
+
+        if learn and traversed_edges:
+            self._reinforce(traversed_edges, activated_nodes)
+
+        return SignalResult(
+            source_nodes=sources,
+            activated_nodes=sorted(activated_nodes),
+            traversed_edges=sorted(traversed_edges),
+            activation_history=history,
+            final_activation=activation.copy(),
+        )
+
+    def _propagate_legacy(
+        self,
+        source_nodes: Iterable[int],
+        steps: int,
+        threshold: float,
+        noise: float,
+        learn: bool,
+        context_nodes: Iterable[int] | None,
+    ) -> SignalResult:
+        sources, activation = self._initial_activation(source_nodes, context_nodes)
         activated_nodes = set(np.flatnonzero(activation > 0).tolist())
         traversed_edges: set[tuple[int, int]] = set()
         history = [sorted(activated_nodes)]
@@ -195,6 +336,11 @@ class SphereBrain:
             "seed": self.seed,
             "learning_rate": self.learning_rate,
             "decay_rate": self.decay_rate,
+            "propagation_mode": self.propagation_mode,
+            "signal_decay": self.signal_decay,
+            "max_branches": self.max_branches,
+            "max_active_per_step": self.max_active_per_step,
+            "max_total_active_nodes": self.max_total_active_nodes,
             "positions": self.positions.tolist(),
             "adjacency": self.adjacency.astype(int).tolist(),
             "weights": self.weights.tolist(),
@@ -212,6 +358,11 @@ class SphereBrain:
             seed=data["seed"],
             learning_rate=data["learning_rate"],
             decay_rate=data["decay_rate"],
+            propagation_mode=data.get("propagation_mode", "focused"),
+            signal_decay=data.get("signal_decay", 0.78),
+            max_branches=data.get("max_branches", 2),
+            max_active_per_step=data.get("max_active_per_step", 72),
+            max_total_active_nodes=data.get("max_total_active_nodes", 100),
         )
         brain.positions = np.asarray(data["positions"], dtype=float)
         brain.adjacency = np.asarray(data["adjacency"], dtype=bool)
