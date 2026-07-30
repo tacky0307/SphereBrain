@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from pathlib import Path
 
 import numpy as np
+
+# Allow both `python -m experiments...` and direct script execution.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from wave_core.attractor import AttractorConfig, AttractorSphereCore, AttractorTrace
 
@@ -22,6 +28,19 @@ def mean_pairwise_similarity(patterns: list[np.ndarray]) -> float:
         for right in range(left + 1, len(patterns)):
             values.append(cosine_similarity(patterns[left], patterns[right]))
     return float(np.mean(values)) if values else 1.0
+
+
+def pattern_concentration(pattern: np.ndarray) -> float:
+    """Return inverse participation ratio scaled to 0..1.
+
+    Values near 1 mean activity is concentrated in a small subset. Values near
+    1/N mean nearly uniform whole-sphere activity.
+    """
+    total = float(np.sum(pattern))
+    if total <= 1e-15:
+        return 0.0
+    probabilities = pattern / total
+    return float(np.sum(probabilities * probabilities))
 
 
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -42,6 +61,8 @@ def record_trace(path: Path, trace: AttractorTrace) -> None:
                 "step": snapshot.step,
                 "total_activity": snapshot.total_activity,
                 "active_count": snapshot.active_count,
+                "active_fraction": snapshot.active_count / len(snapshot.activity),
+                "pattern_concentration": pattern_concentration(snapshot.activity),
                 "center_x": snapshot.center[0],
                 "center_y": snapshot.center[1],
                 "center_z": snapshot.center[2],
@@ -53,7 +74,11 @@ def record_trace(path: Path, trace: AttractorTrace) -> None:
     write_csv(path, rows)
 
 
-def run_experience(core: AttractorSphereCore, a_region: tuple[int, ...], c_region: tuple[int, ...]) -> np.ndarray:
+def run_experience(
+    core: AttractorSphereCore,
+    a_region: tuple[int, ...],
+    c_region: tuple[int, ...],
+) -> np.ndarray:
     core.reset_activity()
     patterns: list[np.ndarray] = []
 
@@ -104,11 +129,14 @@ def recall_trials(
                 comments="",
             )
 
+    mean_active_count = float(np.mean(active_counts))
     return {
         "mode": label,
         "mean_lifetime": float(np.mean(lifetimes)),
         "mean_final_total_activity": float(np.mean([np.sum(pattern) for pattern in patterns])),
-        "mean_active_cluster_size": float(np.mean(active_counts)),
+        "mean_active_cluster_size": mean_active_count,
+        "mean_active_fraction": mean_active_count / core.config.node_count,
+        "mean_pattern_concentration": float(np.mean([pattern_concentration(pattern) for pattern in patterns])),
         "trial_to_trial_similarity": mean_pairwise_similarity(patterns),
         "experience_pattern_similarity": float(np.mean(experience_similarities)),
     }
@@ -131,7 +159,7 @@ def main() -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     summary_rows: list[dict[str, object]] = []
 
-    print("Experiment 009: Spontaneous State Formation")
+    print("Experiment 009: Differentiated Spontaneous State Formation")
     print(f"brains: {args.brains}")
     print(f"repetitions: {args.repetitions}")
     print(f"trials: {args.trials}")
@@ -195,18 +223,11 @@ def main() -> None:
     for mode in ("control", "trained"):
         selected = [row for row in final_rows if str(row["mode"]).endswith(mode)]
         if selected:
-            print(
-                f"{mode} mean lifetime: "
-                f"{np.mean([float(row['mean_lifetime']) for row in selected]):.12g}"
-            )
-            print(
-                f"{mode} trial similarity: "
-                f"{np.mean([float(row['trial_to_trial_similarity']) for row in selected]):.12g}"
-            )
-            print(
-                f"{mode} experience similarity: "
-                f"{np.mean([float(row['experience_pattern_similarity']) for row in selected]):.12g}"
-            )
+            print(f"{mode} mean lifetime: {np.mean([float(row['mean_lifetime']) for row in selected]):.12g}")
+            print(f"{mode} active fraction: {np.mean([float(row['mean_active_fraction']) for row in selected]):.12g}")
+            print(f"{mode} concentration: {np.mean([float(row['mean_pattern_concentration']) for row in selected]):.12g}")
+            print(f"{mode} trial similarity: {np.mean([float(row['trial_to_trial_similarity']) for row in selected]):.12g}")
+            print(f"{mode} experience similarity: {np.mean([float(row['experience_pattern_similarity']) for row in selected]):.12g}")
 
     print(f"output: {output_root.resolve()}")
 
