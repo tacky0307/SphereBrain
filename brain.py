@@ -23,12 +23,7 @@ class SignalResult:
 
 
 class SphereBrain:
-    """SphereBrain core with the v27 experience/reflection life cycle.
-
-    Existing propagation and persistence APIs remain available. The v27
-    additions observe each completed activity, store it as Trace, and allow
-    recorded whole-brain activity to return as internal experience.
-    """
+    """SphereBrain core with the v27 experience/reflection life cycle."""
 
     def __init__(
         self,
@@ -56,14 +51,13 @@ class SphereBrain:
 
         self.activity = np.zeros(node_count, dtype=float)
         self.previous_activity = np.zeros(node_count, dtype=float)
+        self.peak_activity = np.zeros(node_count, dtype=float)
         self.fatigue = np.zeros(node_count, dtype=float)
 
         self.trace = TraceRecorder(max_frames=max_trace_frames)
         self.reflection = ReflectionEngine(rng=self.rng)
         self.scheduler = Scheduler(
-            SchedulerConfig(
-                reflections_per_experience=reflections_per_experience,
-            )
+            SchedulerConfig(reflections_per_experience=reflections_per_experience)
         )
 
         self._connect_nearest_nodes()
@@ -150,17 +144,12 @@ class SphereBrain:
         noise: float = 0.018,
         learn: bool = True,
     ) -> SignalResult:
-        """Propagate an arbitrary whole-brain signal.
-
-        This v27 entry point is used by Reflection. Unlike ``propagate``, it
-        preserves the distributed activity pattern stored in a Trace frame.
-        """
+        """Propagate a distributed whole-brain signal, including Reflection."""
 
         activation = np.asarray(signal, dtype=float)
         if activation.shape != (self.node_count,):
             raise ValueError(
-                f"signal must have shape ({self.node_count},), "
-                f"received {activation.shape}"
+                f"signal must have shape ({self.node_count},), received {activation.shape}"
             )
         if not np.all(np.isfinite(activation)):
             raise ValueError("signal must contain only finite values")
@@ -187,6 +176,7 @@ class SphereBrain:
         learn: bool,
     ) -> SignalResult:
         activation = initial_activation.copy()
+        peak_activity = activation.copy()
         self.previous_activity = self.activity.copy()
 
         activated_nodes = set(np.flatnonzero(activation > 0).tolist())
@@ -202,6 +192,7 @@ class SphereBrain:
 
             next_activation = np.clip(next_activation, 0.0, 1.0)
             next_activation[next_activation < threshold] = 0.0
+            peak_activity = np.maximum(peak_activity, next_activation)
 
             active_now = np.flatnonzero(next_activation > 0).tolist()
             history.append(active_now)
@@ -221,6 +212,7 @@ class SphereBrain:
             self._reinforce(traversed_edges, activated_nodes)
 
         self.activity = activation.copy()
+        self.peak_activity = peak_activity.copy()
 
         return SignalResult(
             source_nodes=source_nodes,
@@ -240,8 +232,6 @@ class SphereBrain:
         learn: bool = True,
         metadata: dict | None = None,
     ) -> tuple[SignalResult, TraceFrame]:
-        """Run one external experience and record what happened."""
-
         if not self.scheduler.is_experience:
             raise RuntimeError(
                 "scheduler is in REFLECTION phase; finish scheduled reflections "
@@ -290,8 +280,6 @@ class SphereBrain:
         noise: float = 0.018,
         learn: bool = True,
     ) -> tuple[SignalResult, TraceFrame, ReflectionResult]:
-        """Replay one Trace frame and record the resulting internal experience."""
-
         if not self.scheduler.is_reflection:
             raise RuntimeError("scheduler is not in REFLECTION phase")
 
@@ -335,8 +323,6 @@ class SphereBrain:
         noise: float = 0.018,
         learn: bool = True,
     ) -> list[tuple[SignalResult, TraceFrame, ReflectionResult]]:
-        """Run reflections until the Scheduler returns to EXPERIENCE."""
-
         completed = []
         while self.scheduler.phase is SchedulerPhase.REFLECTION:
             completed.append(
@@ -385,7 +371,7 @@ class SphereBrain:
         upper = np.triu_indices(self.node_count, k=1)
         mask = self.adjacency[upper]
         pairs = list(zip(upper[0][mask], upper[1][mask]))
-        pairs.sort(key=lambda e: self.weights[e[0], e[1]], reverse=True)
+        pairs.sort(key=lambda edge: self.weights[edge[0], edge[1]], reverse=True)
         return [
             {
                 "a": int(a),
@@ -411,6 +397,7 @@ class SphereBrain:
             "node_usage": self.node_usage.tolist(),
             "activity": self.activity.tolist(),
             "previous_activity": self.previous_activity.tolist(),
+            "peak_activity": self.peak_activity.tolist(),
             "fatigue": self.fatigue.tolist(),
             "scheduler_time_index": self.scheduler.time_index,
             "scheduler_phase": self.scheduler.phase.name,
@@ -432,20 +419,19 @@ class SphereBrain:
         brain.weights = np.asarray(data["weights"], dtype=float)
         brain.usage = np.asarray(data["usage"], dtype=int)
         brain.node_usage = np.asarray(
-            data.get("node_usage", [0] * brain.node_count),
-            dtype=int,
+            data.get("node_usage", [0] * brain.node_count), dtype=int
         )
         brain.activity = np.asarray(
-            data.get("activity", [0.0] * brain.node_count),
-            dtype=float,
+            data.get("activity", [0.0] * brain.node_count), dtype=float
         )
         brain.previous_activity = np.asarray(
-            data.get("previous_activity", [0.0] * brain.node_count),
-            dtype=float,
+            data.get("previous_activity", [0.0] * brain.node_count), dtype=float
+        )
+        brain.peak_activity = np.asarray(
+            data.get("peak_activity", brain.activity.tolist()), dtype=float
         )
         brain.fatigue = np.asarray(
-            data.get("fatigue", [0.0] * brain.node_count),
-            dtype=float,
+            data.get("fatigue", [0.0] * brain.node_count), dtype=float
         )
         brain.scheduler.time_index = int(data.get("scheduler_time_index", 0))
         phase_name = data.get("scheduler_phase", "EXPERIENCE")
