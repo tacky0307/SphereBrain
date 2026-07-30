@@ -187,29 +187,28 @@ class AttractorSphereCore:
             where=degree > 0,
         )
 
-    def _propagation_bias(self) -> np.ndarray:
-        """Return an optional node-wise multiplier for propagated activity.
+    def _flow_bias(self) -> np.ndarray:
+        """Return an optional source-to-destination flow multiplier.
 
-        The base attractor has no experience guidance and therefore returns
-        ones. Subclasses may expose ``experience_bias()`` to shape propagation
-        without modifying direction or capacity themselves.
+        The base attractor has no experience guidance and therefore returns an
+        all-ones matrix. Subclasses may expose ``flow_bias()`` to alter
+        effective flow without rewriting learned direction or capacity.
         """
 
-        provider = getattr(self, "experience_bias", None)
+        provider = getattr(self, "flow_bias", None)
+        shape = (self.config.node_count, self.config.node_count)
         if provider is None:
-            return np.ones(self.config.node_count, dtype=float)
+            return np.ones(shape, dtype=float)
 
         bias = np.asarray(provider(), dtype=float)
-        expected_shape = (self.config.node_count,)
-        if bias.shape != expected_shape:
+        if bias.shape != shape:
             raise ValueError(
-                "propagation bias must have shape "
-                f"{expected_shape}, received {bias.shape}"
+                f"flow bias must have shape {shape}, received {bias.shape}"
             )
         if not np.all(np.isfinite(bias)):
-            raise ValueError("propagation bias must contain only finite values")
+            raise ValueError("flow bias must contain only finite values")
         if np.any(bias < 0.0):
-            raise ValueError("propagation bias must not contain negative values")
+            raise ValueError("flow bias must not contain negative values")
 
         return bias
 
@@ -240,19 +239,18 @@ class AttractorSphereCore:
         cfg = self.config
         current = self.activity.copy()
 
-        # Experience guidance changes how strongly activity leaves each node,
-        # while preserving learned direction probabilities and capacities.
-        # An all-ones bias reproduces the original dynamics exactly.
-        propagation_bias = self._propagation_bias()
-        effective_current = current * propagation_bias
-        effective_previous = self.previous_activity * propagation_bias
+        # Experience guidance changes effective source-to-destination flow.
+        # Direction probabilities and learned capacities remain stored in
+        # their original form; the bias is regenerated for each step.
+        flow_bias = self._flow_bias()
+        effective_capacity = self.capacity * flow_bias
 
         direction = self._direction_probabilities()
-        transmitted = effective_current[:, None] * direction * self.capacity
+        transmitted = current[:, None] * direction * effective_capacity
         feedforward = np.sum(transmitted, axis=0)
 
         recurrent = np.sum(
-            effective_previous[:, None] * direction * self.capacity,
+            self.previous_activity[:, None] * direction * effective_capacity,
             axis=0,
         )
         excitation_raw = (

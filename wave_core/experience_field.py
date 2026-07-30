@@ -33,7 +33,7 @@ class ExperienceFieldConfig:
 
 
 class ExperienceFieldAttractorCore(AttractorSphereCore):
-    """AttractorSphereCore with transient and persistent experience fields."""
+    """AttractorSphereCore with experience-shaped flow guidance."""
 
     def __init__(
         self,
@@ -113,24 +113,34 @@ class ExperienceFieldAttractorCore(AttractorSphereCore):
         )
         self.experience_step += 1
 
-    def experience_bias(self) -> np.ndarray:
-        """Return a bounded node-wise propagation multiplier."""
+    def flow_bias(self) -> np.ndarray:
+        """Return a bounded source-to-destination flow multiplier.
+
+        The returned matrix has shape ``(node_count, node_count)``.
+        Experienced source nodes release activity more easily and
+        experienced destination nodes receive activity more easily.
+        An inexperienced brain returns an all-ones matrix, preserving
+        the original attractor dynamics exactly.
+        """
 
         memory = np.maximum(self.experience_memory, 0.0)
         maximum = float(np.max(memory))
+        shape = (self.config.node_count, self.config.node_count)
 
         if maximum <= 1e-12:
-            return np.ones(self.config.node_count, dtype=float)
+            return np.ones(shape, dtype=float)
 
         normalized = memory / maximum
-        bias = 1.0 + self.field_config.propagation_bias_gain * normalized
+        node_bias = 1.0 + self.field_config.propagation_bias_gain * normalized
+        flow = node_bias[:, None] * node_bias[None, :]
         np.clip(
-            bias,
+            flow,
             1.0,
             self.field_config.propagation_bias_max,
-            out=bias,
+            out=flow,
         )
-        return bias
+        flow[~self.adjacency] = 1.0
+        return flow
 
     def _plasticity_update(self) -> None:
         super()._plasticity_update()
