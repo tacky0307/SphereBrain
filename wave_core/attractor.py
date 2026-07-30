@@ -13,10 +13,10 @@ from .core import SphereWaveCore, WaveConfig
 class AttractorConfig:
     """Dynamics for experience-shaped spontaneous state formation.
 
-    The model deliberately separates directional preference from absolute
-    pathway capacity.  It does not contain a target, winner, replay sequence,
-    or prescribed answer.  Stable states must arise from local recurrent
-    excitation balanced by fatigue and inhibition.
+    Direction and capacity remain separate. Stable states must arise from local
+    recurrent excitation balanced by fatigue, global inhibition, and a
+    graph-distance surround-inhibition ring. No target, winner, replay path, or
+    prescribed answer is supplied.
     """
 
     node_count: int = 240
@@ -26,11 +26,15 @@ class AttractorConfig:
     persistence: float = 0.42
     propagation_gain: float = 1.10
     recurrent_gain: float = 0.56
-    local_inhibition_gain: float = 0.20
-    global_inhibition_gain: float = 0.13
+    local_inhibition_gain: float = 0.05
+    surround_inhibition_gain: float = 0.32
+    global_inhibition_gain: float = 0.10
     fatigue_gain: float = 0.045
     fatigue_recovery: float = 0.90
     decay: float = 0.985
+
+    surround_min_hops: int = 2
+    surround_max_hops: int = 3
 
     response_gain: float = 2.2
     activity_cap: float = 1.0
@@ -100,6 +104,7 @@ class AttractorSphereCore:
         )
         self.positions = geometry.positions.copy()
         self.adjacency = geometry.adjacency.copy()
+        self.surround_adjacency = self._build_surround_adjacency()
 
         self.direction = np.zeros_like(geometry.conductivity)
         self.direction[self.adjacency] = 1.0
@@ -110,6 +115,25 @@ class AttractorSphereCore:
         self.previous_activity = np.zeros(self.config.node_count, dtype=float)
         self.fatigue = np.zeros(self.config.node_count, dtype=float)
         self.step_index = 0
+
+    def _build_surround_adjacency(self) -> np.ndarray:
+        """Return nodes lying in the configured graph-distance inhibition ring."""
+        node_count = self.config.node_count
+        direct = self.adjacency.astype(bool)
+        visited = np.eye(node_count, dtype=bool)
+        frontier = np.eye(node_count, dtype=bool)
+        ring = np.zeros((node_count, node_count), dtype=bool)
+
+        for hop in range(1, self.config.surround_max_hops + 1):
+            frontier = (frontier.astype(np.int8) @ direct.astype(np.int8)) > 0
+            frontier &= ~visited
+            visited |= frontier
+            if hop >= self.config.surround_min_hops:
+                ring |= frontier
+
+        ring &= ~direct
+        np.fill_diagonal(ring, False)
+        return ring
 
     def clone(self) -> "AttractorSphereCore":
         other = AttractorSphereCore(self.config)
@@ -152,13 +176,14 @@ class AttractorSphereCore:
         totals = np.sum(weighted, axis=1, keepdims=True)
         return np.divide(weighted, totals, out=np.zeros_like(weighted), where=totals > 0)
 
-    def _local_inhibition(self, current: np.ndarray) -> np.ndarray:
-        degree = np.sum(self.adjacency, axis=0)
-        neighbor_activity = current @ self.adjacency
+    @staticmethod
+    def _mean_connected_activity(current: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        degree = np.sum(mask, axis=0)
+        connected_activity = current @ mask
         return np.divide(
-            neighbor_activity,
+            connected_activity,
             degree,
-            out=np.zeros_like(neighbor_activity),
+            out=np.zeros_like(connected_activity),
             where=degree > 0,
         )
 
@@ -173,9 +198,6 @@ class AttractorSphereCore:
         self.direction += cfg.direction_learning_rate * temporal * self.adjacency
         self.capacity += cfg.capacity_learning_rate * coactive * self.adjacency
 
-        # Preserve relative structure while preventing every incoming edge from
-        # becoming strong.  Underused edges lose a tiny amount only when the
-        # receiving node is persistently over-supported.
         incoming_capacity = np.sum(self.capacity, axis=0)
         baseline = 0.42 * np.sum(self.adjacency, axis=0)
         excess = np.maximum(incoming_capacity - baseline, 0.0)
@@ -196,7 +218,6 @@ class AttractorSphereCore:
         transmitted = current[:, None] * direction * self.capacity
         feedforward = np.sum(transmitted, axis=0)
 
-        # Recurrent support is local and terrain-dependent, but bounded.
         recurrent = np.sum(
             self.previous_activity[:, None] * direction * self.capacity,
             axis=0,
@@ -208,9 +229,12 @@ class AttractorSphereCore:
         )
         excitation = self._saturate(excitation_raw, cfg.response_gain)
 
-        local_inhibition = cfg.local_inhibition_gain * self._local_inhibition(current)
+        direct_activity = self._mean_connected_activity(current, self.adjacency)
+        surround_activity = self._mean_connected_activity(current, self.surround_adjacency)
+        local_inhibition = cfg.local_inhibition_gain * direct_activity
+        surround_inhibition = cfg.surround_inhibition_gain * surround_activity
         global_inhibition = cfg.global_inhibition_gain * float(np.mean(current))
-        inhibition = local_inhibition + global_inhibition
+        inhibition = local_inhibition + surround_inhibition + global_inhibition
 
         next_activity = excitation - inhibition - self.fatigue
         next_activity = np.maximum(next_activity, 0.0)
