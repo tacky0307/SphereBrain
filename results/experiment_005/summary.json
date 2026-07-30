@@ -1,0 +1,930 @@
+{
+  "experiment": "Experiment 005: Whole Brain Formation",
+  "hypothesis": "Different learned terrains can form one functional class: A stimulation produces C without prescribing an internal route.",
+  "parameters": {
+    "brains": 10,
+    "repetitions": 100,
+    "delay": 3,
+    "delay_jitter": 2,
+    "strength_jitter": 0.08,
+    "initial_terrain_noise": 0.012,
+    "lesion_fraction": 0.03,
+    "region_radius": 2,
+    "seed": 2700,
+    "output": "results\\experiment_005"
+  },
+  "trained_accuracy": 0.0,
+  "lesioned_accuracy": 0.0,
+  "brains": [
+    {
+      "brain": 1,
+      "seed": 2701,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.715064755785371e-08,
+            "integral": 4.715064755785371e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.327523149761287e-07,
+            "integral": 7.503410727269903e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.785522231006924e-08,
+            "integral": 4.785522231006924e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.414905901706241e-07,
+            "integral": 7.62093347991173e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 5.0262800603280497e-08,
+            "integral": 5.0262800603280497e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.096413272947233e-07,
+            "integral": 7.302440851152721e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1133,
+        "strengthened_directed_edges": 1133,
+        "total_absolute_change": 1.2477449993767293,
+        "mean_conductivity": 0.420777005529986,
+        "std_conductivity": 0.013202164815239515,
+        "max_conductivity": 0.5157814093866638,
+        "effective_edge_count": 292
+      }
+    },
+    {
+      "brain": 2,
+      "seed": 2702,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.6146966893400165e-08,
+            "integral": 4.6146966893400165e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.188010428094877e-07,
+            "integral": 7.32128020084018e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.684533703655715e-08,
+            "integral": 4.684533703655715e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.274762394722527e-07,
+            "integral": 7.438228209315197e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.369267133411495e-08,
+            "integral": 4.369267133411495e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 4.976490911904387e-07,
+            "integral": 7.139956726497058e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1133,
+        "strengthened_directed_edges": 1133,
+        "total_absolute_change": 1.2532725850425406,
+        "mean_conductivity": 0.4199670785668472,
+        "std_conductivity": 0.01276704325155927,
+        "max_conductivity": 0.5151649964968666,
+        "effective_edge_count": 255
+      }
+    },
+    {
+      "brain": 3,
+      "seed": 2703,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.4244235662723244e-08,
+            "integral": 4.4244235662723244e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 4.917471330414352e-07,
+            "integral": 6.935048645716153e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.4911297226116355e-08,
+            "integral": 4.4911297226116355e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 4.9989090681116e-07,
+            "integral": 7.044859905866845e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.88915274154827e-08,
+            "integral": 4.88915274154827e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.029095079925103e-07,
+            "integral": 7.260792260597198e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1135,
+        "strengthened_directed_edges": 1135,
+        "total_absolute_change": 1.2431837824292842,
+        "mean_conductivity": 0.420217880359293,
+        "std_conductivity": 0.01348443051907578,
+        "max_conductivity": 0.517307334307152,
+        "effective_edge_count": 260
+      }
+    },
+    {
+      "brain": 4,
+      "seed": 2704,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.8222928117230476e-08,
+            "integral": 4.8222928117230476e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.299006844613624e-07,
+            "integral": 7.483393910865476e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.8927987372613505e-08,
+            "integral": 4.8927987372613505e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.383162226358275e-07,
+            "integral": 7.596902438161145e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.906825340463727e-08,
+            "integral": 4.906825340463727e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 6.228101237453071e-07,
+            "integral": 9.01979480281229e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1130,
+        "strengthened_directed_edges": 1130,
+        "total_absolute_change": 1.2063139623932118,
+        "mean_conductivity": 0.4210552025063546,
+        "std_conductivity": 0.013040485660635882,
+        "max_conductivity": 0.5235678209423084,
+        "effective_edge_count": 265
+      }
+    },
+    {
+      "brain": 5,
+      "seed": 2705,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.614130411422022e-08,
+            "integral": 4.614130411422022e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.023418168762509e-07,
+            "integral": 7.094865327162773e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.682508958133606e-08,
+            "integral": 4.682508958133606e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.106580808496768e-07,
+            "integral": 7.206956951101166e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.667703622515966e-08,
+            "integral": 4.667703622515966e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 6.505466688751357e-07,
+            "integral": 9.477009102072628e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1131,
+        "strengthened_directed_edges": 1131,
+        "total_absolute_change": 1.2531133304663824,
+        "mean_conductivity": 0.4203761633948845,
+        "std_conductivity": 0.01317771756572562,
+        "max_conductivity": 0.5110471866275579,
+        "effective_edge_count": 275
+      }
+    },
+    {
+      "brain": 6,
+      "seed": 2706,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.508170316588446e-08,
+            "integral": 4.508170316588446e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.299489448698149e-07,
+            "integral": 7.512274105522907e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.5744719540101675e-08,
+            "integral": 4.5744719540101675e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.385418253983045e-07,
+            "integral": 7.628760063167963e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 5.015766428372819e-08,
+            "integral": 5.015766428372819e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.627403765407638e-07,
+            "integral": 8.040992212183819e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1134,
+        "strengthened_directed_edges": 1134,
+        "total_absolute_change": 1.2553777663445662,
+        "mean_conductivity": 0.42087021734422414,
+        "std_conductivity": 0.012969017212939131,
+        "max_conductivity": 0.5171816333385933,
+        "effective_edge_count": 268
+      }
+    },
+    {
+      "brain": 7,
+      "seed": 2707,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.5028319745782596e-08,
+            "integral": 4.5028319745782596e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.470025705747987e-07,
+            "integral": 7.763735715639517e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.5703245039720595e-08,
+            "integral": 4.5703245039720595e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.560512196560769e-07,
+            "integral": 7.886355739452226e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.748437290282904e-08,
+            "integral": 4.748437290282904e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.207605086185273e-07,
+            "integral": 7.53344862907673e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1132,
+        "strengthened_directed_edges": 1132,
+        "total_absolute_change": 1.2544419824336266,
+        "mean_conductivity": 0.4204277650711645,
+        "std_conductivity": 0.013375701000144019,
+        "max_conductivity": 0.524195901016686,
+        "effective_edge_count": 274
+      }
+    },
+    {
+      "brain": 8,
+      "seed": 2708,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.708535479222863e-08,
+            "integral": 4.708535479222863e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 4.971571065240412e-07,
+            "integral": 6.989980944479465e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.779236728876253e-08,
+            "integral": 4.779236728876253e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.052989800019228e-07,
+            "integral": 7.099356605661973e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 5.015765959463159e-08,
+            "integral": 5.015765959463159e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 4.944010550692791e-07,
+            "integral": 6.990377356335536e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1133,
+        "strengthened_directed_edges": 1133,
+        "total_absolute_change": 1.2535051245797146,
+        "mean_conductivity": 0.42041017431935634,
+        "std_conductivity": 0.013392796342716937,
+        "max_conductivity": 0.5202768939597017,
+        "effective_edge_count": 268
+      }
+    },
+    {
+      "brain": 9,
+      "seed": 2709,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.3562012953558485e-08,
+            "integral": 4.3562012953558485e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.203351611288214e-07,
+            "integral": 7.362572894687072e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.418806220450445e-08,
+            "integral": 4.418806220450445e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.28592305110213e-07,
+            "integral": 7.474129788501292e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.9242651169618074e-08,
+            "integral": 4.9242651169618074e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.467534565706383e-07,
+            "integral": 7.746605398183112e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1130,
+        "strengthened_directed_edges": 1130,
+        "total_absolute_change": 1.220616918231223,
+        "mean_conductivity": 0.42090358337274597,
+        "std_conductivity": 0.01316343087772533,
+        "max_conductivity": 0.5132474404829673,
+        "effective_edge_count": 278
+      }
+    },
+    {
+      "brain": 10,
+      "seed": 2710,
+      "regions": {
+        "A": [
+          123,
+          102,
+          144
+        ],
+        "B": [
+          0,
+          1,
+          2
+        ],
+        "C": [
+          127,
+          106,
+          148
+        ],
+        "D": [
+          239,
+          238,
+          237
+        ]
+      },
+      "baseline": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.733449432051367e-08,
+            "integral": 4.733449432051367e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.039227247131282e-07,
+            "integral": 7.098753906818361e-07
+          }
+        }
+      },
+      "trained": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 4.804366664494897e-08,
+            "integral": 4.804366664494897e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.125835494556405e-07,
+            "integral": 7.215508033620577e-07
+          }
+        }
+      },
+      "lesioned": {
+        "winner": "D",
+        "correct": false,
+        "scores": {
+          "B": {
+            "peak": 2.2415072108410436e-08,
+            "integral": 2.2415072108410436e-08
+          },
+          "C": {
+            "peak": 0.0,
+            "integral": 0.0
+          },
+          "D": {
+            "peak": 5.288685942417472e-07,
+            "integral": 7.634787026644312e-07
+          }
+        },
+        "removed_directed_edges": 59
+      },
+      "terrain": {
+        "directed_edges": 1972,
+        "changed_directed_edges": 1132,
+        "strengthened_directed_edges": 1132,
+        "total_absolute_change": 1.2496509509569214,
+        "mean_conductivity": 0.42048980511617423,
+        "std_conductivity": 0.013309960505512837,
+        "max_conductivity": 0.5180215327775818,
+        "effective_edge_count": 275
+      }
+    }
+  ]
+}

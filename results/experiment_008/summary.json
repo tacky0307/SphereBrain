@@ -1,0 +1,12 @@
+{
+  "experiment": "Experiment 008: Recall Path Diagnostics",
+  "brains": 1,
+  "repetitions": 500,
+  "multiscale_mean_path_progress": 0.2222222222222222,
+  "control_mean_path_progress": 0.2222222222222222,
+  "multiscale_mean_closest_meaningful_distance": 1.6295307022292014,
+  "control_mean_closest_meaningful_distance": 1.6295307022292014,
+  "multiscale_mean_path_integral": 0.34046908489401023,
+  "control_mean_path_integral": 0.3410110101580632,
+  "note": "This experiment observes recall only. It does not add prediction or force C activity."
+}

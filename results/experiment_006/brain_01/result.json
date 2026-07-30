@@ -1,0 +1,165 @@
+{
+  "brain": 1,
+  "seed": 2801,
+  "regions": {
+    "A": [
+      123,
+      102,
+      144
+    ],
+    "B": [
+      0,
+      1,
+      2
+    ],
+    "C": [
+      127,
+      106,
+      148
+    ],
+    "D": [
+      239,
+      238,
+      237
+    ]
+  },
+  "experience_config": {
+    "learning_rate": 0.00035,
+    "temporal_decay": 0.94,
+    "temporal_weight": 0.65,
+    "terrain_weight": 0.35,
+    "spatial_passes": 8,
+    "spatial_decay": 0.72,
+    "minimum_delta": 1e-10
+  },
+  "growth": [
+    {
+      "brain": 1,
+      "checkpoint": 0,
+      "mode": "reflected",
+      "winner": "D",
+      "c_integral": 0.0,
+      "c_peak": 0.0,
+      "c_first_step": -1,
+      "b_integral": 4.532723815683895e-08,
+      "d_integral": 6.735096705518369e-07,
+      "c_selectivity": -3.5941845435433794e-07,
+      "c_ratio": 0.0,
+      "c_change_from_baseline": 0.0,
+      "terrain_total_change": 0.0,
+      "terrain_changed_edges": 0
+    },
+    {
+      "brain": 1,
+      "checkpoint": 0,
+      "mode": "control",
+      "winner": "D",
+      "c_integral": 0.0,
+      "c_peak": 0.0,
+      "c_first_step": -1,
+      "b_integral": 4.532723815683895e-08,
+      "d_integral": 6.735096705518369e-07,
+      "c_selectivity": -3.5941845435433794e-07,
+      "c_ratio": 0.0,
+      "c_change_from_baseline": 0.0,
+      "terrain_total_change": 0.0,
+      "terrain_changed_edges": 0
+    },
+    {
+      "brain": 1,
+      "checkpoint": 1,
+      "mode": "control",
+      "winner": "D",
+      "c_integral": 0.0,
+      "c_peak": 0.0,
+      "c_first_step": -1,
+      "b_integral": 4.53340785424548e-08,
+      "d_integral": 6.736187687809824e-07,
+      "c_selectivity": -3.594764236617186e-07,
+      "c_ratio": 0.0,
+      "c_change_from_baseline": 0.0,
+      "terrain_total_change": 0.012076833642966411,
+      "terrain_changed_edges": 733
+    },
+    {
+      "brain": 1,
+      "checkpoint": 1,
+      "mode": "reflected",
+      "winner": "D",
+      "c_integral": 0.0,
+      "c_peak": 0.0,
+      "c_first_step": -1,
+      "b_integral": 4.5340900894534644e-08,
+      "d_integral": 6.737255164632761e-07,
+      "c_selectivity": -3.5953320867890536e-07,
+      "c_ratio": 0.0,
+      "c_change_from_baseline": 0.0,
+      "terrain_total_change": 0.03647355446210354,
+      "terrain_changed_edges": 1972
+    },
+    {
+      "brain": 1,
+      "checkpoint": 5,
+      "mode": "control",
+      "winner": "D",
+      "c_integral": 0.0,
+      "c_peak": 0.0,
+      "c_first_step": -1,
+      "b_integral": 4.535936346777447e-08,
+      "d_integral": 6.740220274502286e-07,
+      "c_selectivity": -3.5969069545900154e-07,
+      "c_ratio": 0.0,
+      "c_change_from_baseline": 0.0,
+      "terrain_total_change": 0.05834159756874552,
+      "terrain_changed_edges": 871
+    },
+    {
+      "brain": 1,
+      "checkpoint": 5,
+      "mode": "reflected",
+      "winner": "D",
+      "c_integral": 0.0,
+      "c_peak": 0.0,
+      "c_first_step": -1,
+      "b_integral": 4.53924138023774e-08,
+      "d_integral": 6.745392037111182e-07,
+      "c_selectivity": -3.599658087567478e-07,
+      "c_ratio": 0.0,
+      "c_change_from_baseline": 0.0,
+      "terrain_total_change": 0.17951733557391147,
+      "terrain_changed_edges": 1972
+    },
+    {
+      "brain": 1,
+      "checkpoint": 10,
+      "mode": "control",
+      "winner": "D",
+      "c_integral": 0.0,
+      "c_peak": 0.0,
+      "c_first_step": -1,
+      "b_integral": 4.539176936031212e-08,
+      "d_integral": 6.745388233647637e-07,
+      "c_selectivity": -3.5996529636253793e-07,
+      "c_ratio": 0.0,
+      "c_change_from_baseline": 0.0,
+      "terrain_total_change": 0.11821418992108562,
+      "terrain_changed_edges": 928
+    },
+    {
+      "brain": 1,
+      "checkpoint": 10,
+      "mode": "reflected",
+      "winner": "D",
+      "c_integral": 0.0,
+      "c_peak": 0.0,
+      "c_first_step": -1,
+      "b_integral": 4.545729499680474e-08,
+      "d_integral": 6.755641782886012e-07,
+      "c_selectivity": -3.6051073664270294e-07,
+      "c_ratio": 0.0,
+      "c_change_from_baseline": 0.0,
+      "terrain_total_change": 0.3601013811113032,
+      "terrain_changed_edges": 1972
+    }
+  ]
+}
