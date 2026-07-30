@@ -11,11 +11,10 @@ The Core remains the only component that changes through experience.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
-from .trace import TraceFrame, TraceRecorder
+from trace import TraceFrame, TraceRecorder
 
 
 Array = np.ndarray
@@ -28,6 +27,12 @@ class ReflectionConfig:
     replay_gain: float = 1.0
     replay_threshold: float = 0.0
 
+    def __post_init__(self) -> None:
+        if self.replay_gain < 0.0:
+            raise ValueError("replay_gain must be non-negative")
+        if self.replay_threshold < 0.0:
+            raise ValueError("replay_threshold must be non-negative")
+
 
 @dataclass(frozen=True, slots=True)
 class ReflectionResult:
@@ -38,14 +43,20 @@ class ReflectionResult:
     source: str
     signal: Array
 
+    def __post_init__(self) -> None:
+        signal = np.asarray(self.signal, dtype=float)
+        if signal.ndim != 1:
+            raise ValueError("signal must have one dimension")
+        if not np.all(np.isfinite(signal)):
+            raise ValueError("signal must contain only finite values")
+        object.__setattr__(self, "signal", signal.copy())
+
 
 class ReflectionEngine:
     """Replay previously recorded Trace frames.
 
-    Reflection itself contains no learning rule.
-
-    It simply converts stored whole-brain activity back into an internal
-    stimulus which can be injected into the Core.
+    Reflection itself contains no learning rule. It converts stored
+    whole-brain activity back into an internal stimulus for the Core.
     """
 
     def __init__(
@@ -56,10 +67,7 @@ class ReflectionEngine:
         self.config = config or ReflectionConfig()
         self.rng = rng or np.random.default_rng()
 
-    def latest(
-        self,
-        recorder: TraceRecorder,
-    ) -> ReflectionResult:
+    def latest(self, recorder: TraceRecorder) -> ReflectionResult:
         """Replay the newest Trace frame."""
 
         frame = recorder.latest()
@@ -75,10 +83,7 @@ class ReflectionEngine:
         frame = recorder.get(frame_index)
         return self._build_result(frame_index, frame)
 
-    def random(
-        self,
-        recorder: TraceRecorder,
-    ) -> ReflectionResult:
+    def random(self, recorder: TraceRecorder) -> ReflectionResult:
         """Replay one randomly selected Trace frame."""
 
         if len(recorder) == 0:
@@ -86,13 +91,9 @@ class ReflectionEngine:
 
         frame_index = int(self.rng.integers(len(recorder)))
         frame = recorder.get(frame_index)
-
         return self._build_result(frame_index, frame)
 
-    def replay_signal(
-        self,
-        frame: TraceFrame,
-    ) -> Array:
+    def replay_signal(self, frame: TraceFrame) -> Array:
         """Convert a Trace frame into an internal stimulus."""
 
         return frame.replay_signal(
@@ -105,12 +106,9 @@ class ReflectionEngine:
         frame_index: int,
         frame: TraceFrame,
     ) -> ReflectionResult:
-
-        signal = self.replay_signal(frame)
-
         return ReflectionResult(
             frame_index=frame_index,
             time_index=frame.time_index,
             source=frame.source,
-            signal=signal,
+            signal=self.replay_signal(frame),
         )
