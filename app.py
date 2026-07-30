@@ -68,6 +68,30 @@ def load_config() -> dict:
 config = load_config()
 
 
+def activity_summary() -> dict:
+    if last_result is None:
+        return {
+            "active_nodes": 0,
+            "active_edges": 0,
+            "activation_rate": 0.0,
+            "route_preview": "まだ活動はありません",
+        }
+
+    nodes = list(last_result.activated_nodes)
+    edges = list(last_result.traversed_edges)
+    rate = (len(nodes) / max(1, brain.node_count)) * 100
+    route_preview = " → ".join(str(node) for node in nodes[:8])
+    if len(nodes) > 8:
+        route_preview += " → …"
+
+    return {
+        "active_nodes": len(nodes),
+        "active_edges": len(edges),
+        "activation_rate": round(rate, 1),
+        "route_preview": route_preview or "活動経路を記録中",
+    }
+
+
 PAGE = """
 <!doctype html>
 <html lang="ja">
@@ -75,104 +99,249 @@ PAGE = """
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="30">
-<title>Sphere Brain v0.3</title>
+<title>Sphere Brain Observatory v0.3</title>
 <style>
-body { font-family: system-ui,sans-serif; margin:0; background:#f5f7fb; color:#1f2937; }
-header { background:#172554; color:white; padding:18px 24px; }
-main { max-width:1180px; margin:24px auto; padding:0 16px 40px; }
-.grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-.card { background:white; border-radius:14px; padding:18px; box-shadow:0 4px 18px rgba(0,0,0,.07); }
-textarea { width:100%; min-height:100px; box-sizing:border-box; padding:12px; font-size:16px; }
-button { background:#ea580c; color:white; border:0; padding:11px 18px; border-radius:9px; font-size:15px; cursor:pointer; }
-button.secondary { background:#334155; }
-button.stop { background:#b91c1c; }
-iframe { width:100%; height:670px; border:0; background:white; }
-small,.muted { color:#6b7280; }
-table { width:100%; border-collapse:collapse; }
-td,th { padding:8px; border-bottom:1px solid #e5e7eb; text-align:left; vertical-align:top; }
-.badge { display:inline-block; background:#dcfce7; padding:4px 8px; border-radius:999px; }
-.badge.off { background:#e5e7eb; }
-.badge.error { background:#fee2e2; }
+:root {
+  --bg:#07111f;
+  --panel:#0d1b2f;
+  --panel-2:#11243e;
+  --line:#203b5f;
+  --text:#e6edf7;
+  --muted:#93a7bf;
+  --cyan:#68d8ff;
+  --green:#69e09a;
+  --orange:#ff9d52;
+  --red:#ff7b7b;
+}
+* { box-sizing:border-box; }
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  margin:0;
+  background:
+    radial-gradient(circle at top right, rgba(52,113,168,.18), transparent 34%),
+    var(--bg);
+  color:var(--text);
+}
+header {
+  border-bottom:1px solid var(--line);
+  background:rgba(7,17,31,.92);
+  backdrop-filter:blur(10px);
+  position:sticky;
+  top:0;
+  z-index:10;
+}
+.header-inner {
+  max-width:1380px;
+  margin:0 auto;
+  padding:18px 24px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:20px;
+}
+.brand h1 { margin:0; font-size:26px; letter-spacing:.02em; }
+.brand p { margin:5px 0 0; color:var(--muted); font-size:14px; }
+.live {
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  color:var(--green);
+  font-size:14px;
+}
+.live::before {
+  content:"";
+  width:9px;
+  height:9px;
+  border-radius:999px;
+  background:var(--green);
+  box-shadow:0 0 16px rgba(105,224,154,.9);
+}
+main { max-width:1380px; margin:0 auto; padding:24px; }
+.hero-grid { display:grid; grid-template-columns:1.15fr .85fr; gap:18px; }
+.grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+.stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin-bottom:18px; }
+.card {
+  background:linear-gradient(180deg,rgba(17,36,62,.96),rgba(13,27,47,.96));
+  border:1px solid var(--line);
+  border-radius:18px;
+  padding:20px;
+  box-shadow:0 14px 40px rgba(0,0,0,.18);
+}
+.card h2 { margin:0 0 16px; font-size:19px; }
+.eyebrow { color:var(--cyan); text-transform:uppercase; letter-spacing:.12em; font-size:12px; }
+.metric { font-size:30px; font-weight:700; margin-top:8px; }
+.metric-label { color:var(--muted); font-size:13px; }
+textarea {
+  width:100%;
+  min-height:134px;
+  resize:vertical;
+  border:1px solid #2a4c73;
+  border-radius:13px;
+  background:#081522;
+  color:var(--text);
+  padding:14px;
+  font-size:16px;
+  outline:none;
+}
+textarea:focus { border-color:var(--cyan); box-shadow:0 0 0 3px rgba(104,216,255,.12); }
+button {
+  background:linear-gradient(135deg,#ee6b2f,#ff9d52);
+  color:white;
+  border:0;
+  padding:11px 17px;
+  border-radius:10px;
+  font-size:14px;
+  font-weight:650;
+  cursor:pointer;
+}
+button.secondary { background:#233b59; }
+button.stop { background:#7c2930; }
+button:hover { filter:brightness(1.08); }
 .actions { display:flex; gap:10px; flex-wrap:wrap; }
-code { background:#f1f5f9; padding:2px 5px; }
-@media(max-width:800px){ .grid{grid-template-columns:1fr;} iframe{height:520px;} }
+.status-line { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.badge {
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  background:rgba(105,224,154,.12);
+  color:var(--green);
+  border:1px solid rgba(105,224,154,.25);
+  padding:5px 9px;
+  border-radius:999px;
+  font-size:13px;
+}
+.badge.off { background:rgba(147,167,191,.12); color:var(--muted); border-color:rgba(147,167,191,.2); }
+.badge.error { background:rgba(255,123,123,.12); color:var(--red); border-color:rgba(255,123,123,.25); }
+.detail-list { display:grid; gap:10px; margin-top:14px; }
+.detail-row { display:flex; justify-content:space-between; gap:16px; padding-bottom:10px; border-bottom:1px solid rgba(32,59,95,.65); }
+.detail-row:last-child { border-bottom:0; padding-bottom:0; }
+.detail-row span:first-child { color:var(--muted); }
+.route-box {
+  margin-top:16px;
+  padding:14px;
+  border-radius:12px;
+  background:#081522;
+  border:1px solid #203b5f;
+  color:var(--cyan);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  word-break:break-word;
+}
+iframe { width:100%; height:720px; border:1px solid var(--line); border-radius:14px; background:white; }
+small,.muted { color:var(--muted); }
+code { background:#081522; color:#b9d6f3; padding:3px 6px; border-radius:6px; }
+table { width:100%; border-collapse:collapse; }
+td,th { padding:11px 9px; border-bottom:1px solid rgba(32,59,95,.7); text-align:left; vertical-align:top; font-size:14px; }
+th { color:var(--muted); font-weight:600; }
+.section-gap { margin-top:18px; }
+@media(max-width:1050px){ .hero-grid,.grid{grid-template-columns:1fr;} .stats{grid-template-columns:repeat(2,1fr);} }
+@media(max-width:650px){ main{padding:16px;} .header-inner{padding:15px 16px;align-items:flex-start;} .stats{grid-template-columns:1fr;} iframe{height:520px;} .detail-row{flex-direction:column;gap:4px;} }
 </style>
 </head>
 <body>
 <header>
-<h1>Sphere Brain v0.3</h1>
-<div>経路記憶・内部活動・システム音声聴取</div>
+  <div class="header-inner">
+    <div class="brand">
+      <h1>Sphere Brain Observatory v0.3</h1>
+      <p>経験によって変化し続ける認識構造を観測する研究室</p>
+    </div>
+    <div class="live">CORE ONLINE</div>
+  </div>
 </header>
 <main>
-<div class="grid">
-<section class="card">
-<h2>文字入力</h2>
-<form method="post" action="/input">
-<textarea name="text" placeholder="言葉や文章を入力してください"></textarea>
-<p><button type="submit">球体へ入力する</button></p>
-</form>
-<small>直近の記憶が文脈として加わり、使われた経路が強化されます。</small>
-</section>
+  <section class="stats">
+    <div class="card"><div class="eyebrow">Experience</div><div class="metric">{{ memory_count }}</div><div class="metric-label">蓄積された経験</div></div>
+    <div class="card"><div class="eyebrow">Active Nodes</div><div class="metric">{{ activity.active_nodes }}</div><div class="metric-label">直近活動ノード</div></div>
+    <div class="card"><div class="eyebrow">Active Routes</div><div class="metric">{{ activity.active_edges }}</div><div class="metric-label">直近通過経路</div></div>
+    <div class="card"><div class="eyebrow">Activation</div><div class="metric">{{ activity.activation_rate }}%</div><div class="metric-label">Core活動率</div></div>
+  </section>
 
-<section class="card">
-<h2>現在の状態</h2>
-<p><span class="badge">球体：稼働中</span></p>
-<p>記憶件数：{{ memory_count }}</p>
-<p>最終入力：{{ last_input or "まだありません" }}</p>
-<p>最終活動：{{ last_activity }}</p>
-<p>ノード数：{{ brain.node_count }}</p>
-</section>
+  <section class="hero-grid">
+    <div class="card">
+      <div class="eyebrow">Stimulus Input</div>
+      <h2>経験を与える</h2>
+      <form method="post" action="/input">
+        <textarea name="text" placeholder="SphereBrainへ与える言葉や文章を入力してください"></textarea>
+        <p><button type="submit">Coreへ入力する</button></p>
+      </form>
+      <small>入力は刺激へ変換され、直近の文脈とともにCoreを通過します。使われた経路は強化されます。</small>
+    </div>
 
-<section class="card">
-<h2>PC音声の聴取</h2>
-{% if audio.running %}
-<p><span class="badge">聴取中</span> {{ audio.state }}</p>
-{% elif audio.last_error %}
-<p><span class="badge error">エラー</span> {{ audio.last_error }}</p>
-{% else %}
-<p><span class="badge off">停止中</span></p>
-{% endif %}
-<p>文字化した区間：{{ audio.chunks_processed }}</p>
-<p>無音として省略：{{ audio.chunks_skipped }}</p>
-<p>最新の文字：{{ audio.last_text or "まだありません" }}</p>
-<div class="actions">
-<form method="post" action="/audio/start"><button type="submit">音声聴取を開始</button></form>
-<form method="post" action="/audio/stop"><button class="stop" type="submit">音声聴取を停止</button></form>
-</div>
-<p class="muted">既定スピーカーから流れる音を約{{ chunk_seconds }}秒ごとにローカルで文字化します。生の音声は保存しません。</p>
-</section>
+    <div class="card">
+      <div class="status-line">
+        <div>
+          <div class="eyebrow">Current State</div>
+          <h2>現在の状態</h2>
+        </div>
+        <span class="badge">稼働中</span>
+      </div>
+      <div class="detail-list">
+        <div class="detail-row"><span>最後の経験</span><strong>{{ last_input or "まだありません" }}</strong></div>
+        <div class="detail-row"><span>最終活動</span><strong>{{ last_activity }}</strong></div>
+        <div class="detail-row"><span>Coreノード数</span><strong>{{ brain.node_count }}</strong></div>
+      </div>
+      <div class="route-box">{{ activity.route_preview }}</div>
+    </div>
+  </section>
 
-<section class="card">
-<h2>保存とバックアップ</h2>
-<p>脳：<code>data/brain.json</code></p>
-<p>記憶：<code>data/memory.db</code></p>
-<p>自動バックアップ：{{ backup_hours }}時間ごと</p>
-<div class="actions">
-<form method="post" action="/save"><button class="secondary" type="submit">今すぐ保存</button></form>
-<form method="post" action="/backup"><button class="secondary" type="submit">今すぐバックアップ</button></form>
-</div>
-</section>
-</div>
+  <section class="grid section-gap">
+    <div class="card">
+      <div class="eyebrow">Audio Experience</div>
+      <h2>PC音声の聴取</h2>
+      {% if audio.running %}
+      <p><span class="badge">聴取中</span> {{ audio.state }}</p>
+      {% elif audio.last_error %}
+      <p><span class="badge error">エラー</span> {{ audio.last_error }}</p>
+      {% else %}
+      <p><span class="badge off">停止中</span></p>
+      {% endif %}
+      <div class="detail-list">
+        <div class="detail-row"><span>文字化した区間</span><strong>{{ audio.chunks_processed }}</strong></div>
+        <div class="detail-row"><span>無音として省略</span><strong>{{ audio.chunks_skipped }}</strong></div>
+        <div class="detail-row"><span>最新の文字</span><strong>{{ audio.last_text or "まだありません" }}</strong></div>
+      </div>
+      <div class="actions" style="margin-top:16px">
+        <form method="post" action="/audio/start"><button type="submit">音声聴取を開始</button></form>
+        <form method="post" action="/audio/stop"><button class="stop" type="submit">音声聴取を停止</button></form>
+      </div>
+      <p class="muted">既定スピーカーの音を約{{ chunk_seconds }}秒ごとにローカルで文字化します。生の音声は保存しません。</p>
+    </div>
 
-<section class="card" style="margin-top:16px">
-<h2>球体内部</h2>
-<iframe src="/brain-view?ts={{ timestamp }}"></iframe>
-</section>
+    <div class="card">
+      <div class="eyebrow">Persistence</div>
+      <h2>保存とバックアップ</h2>
+      <div class="detail-list">
+        <div class="detail-row"><span>Core</span><code>data/brain.json</code></div>
+        <div class="detail-row"><span>Experience Store</span><code>data/memory.db</code></div>
+        <div class="detail-row"><span>自動バックアップ</span><strong>{{ backup_hours }}時間ごと</strong></div>
+      </div>
+      <div class="actions" style="margin-top:16px">
+        <form method="post" action="/save"><button class="secondary" type="submit">今すぐ保存</button></form>
+        <form method="post" action="/backup"><button class="secondary" type="submit">今すぐバックアップ</button></form>
+      </div>
+    </div>
+  </section>
 
-<section class="card" style="margin-top:16px">
-<h2>最近の記憶</h2>
-<table>
-<tr><th>時刻</th><th>種類</th><th>入力</th><th>活動</th></tr>
-{% for item in memories %}
-<tr>
-<td>{{ item.created_at }}</td>
-<td>{{ item.kind }}</td>
-<td>{{ (item.input_text or "内部活動")[:180] }}</td>
-<td>{{ item.activated_nodes|length }}ノード / {{ item.traversed_edges|length }}経路</td>
-</tr>
-{% endfor %}
-</table>
-</section>
+  <section class="card section-gap">
+    <div class="eyebrow">Core Visualization</div>
+    <h2>球体内部の活動</h2>
+    <iframe src="/brain-view?ts={{ timestamp }}"></iframe>
+  </section>
+
+  <section class="card section-gap">
+    <div class="eyebrow">Trace Log</div>
+    <h2>最近の経験と活動記録</h2>
+    <table>
+      <tr><th>時刻</th><th>種類</th><th>経験</th><th>活動</th></tr>
+      {% for item in memories %}
+      <tr>
+        <td>{{ item.created_at }}</td>
+        <td>{{ item.kind }}</td>
+        <td>{{ (item.input_text or "内部活動")[:180] }}</td>
+        <td>{{ item.activated_nodes|length }}ノード / {{ item.traversed_edges|length }}経路</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
 </main>
 </body>
 </html>
@@ -299,6 +468,7 @@ def index():
         last_input=last_input,
         last_activity=last_activity,
         brain=brain,
+        activity=activity_summary(),
         audio=audio_listener.status,
         timestamp=int(time.time()),
         chunk_seconds=config["audio_chunk_seconds"],
