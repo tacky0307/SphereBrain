@@ -1,0 +1,10 @@
+{
+  "experiment": "Experiment 007: Multi-scale Growth",
+  "brains": 1,
+  "repetitions": 500,
+  "multiscale_mean_c_change": 0.0,
+  "control_mean_c_change": 0.0,
+  "multiscale_mean_path_cost_change": -1.0049482527434925,
+  "control_mean_path_cost_change": -0.20997311035263877,
+  "note": "First inspect path growth. C does not need to receive activity or win yet."
+}

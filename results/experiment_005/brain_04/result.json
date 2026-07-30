@@ -1,0 +1,91 @@
+{
+  "brain": 4,
+  "seed": 2704,
+  "regions": {
+    "A": [
+      123,
+      102,
+      144
+    ],
+    "B": [
+      0,
+      1,
+      2
+    ],
+    "C": [
+      127,
+      106,
+      148
+    ],
+    "D": [
+      239,
+      238,
+      237
+    ]
+  },
+  "baseline": {
+    "winner": "D",
+    "correct": false,
+    "scores": {
+      "B": {
+        "peak": 4.8222928117230476e-08,
+        "integral": 4.8222928117230476e-08
+      },
+      "C": {
+        "peak": 0.0,
+        "integral": 0.0
+      },
+      "D": {
+        "peak": 5.299006844613624e-07,
+        "integral": 7.483393910865476e-07
+      }
+    }
+  },
+  "trained": {
+    "winner": "D",
+    "correct": false,
+    "scores": {
+      "B": {
+        "peak": 4.8927987372613505e-08,
+        "integral": 4.8927987372613505e-08
+      },
+      "C": {
+        "peak": 0.0,
+        "integral": 0.0
+      },
+      "D": {
+        "peak": 5.383162226358275e-07,
+        "integral": 7.596902438161145e-07
+      }
+    }
+  },
+  "lesioned": {
+    "winner": "D",
+    "correct": false,
+    "scores": {
+      "B": {
+        "peak": 4.906825340463727e-08,
+        "integral": 4.906825340463727e-08
+      },
+      "C": {
+        "peak": 0.0,
+        "integral": 0.0
+      },
+      "D": {
+        "peak": 6.228101237453071e-07,
+        "integral": 9.01979480281229e-07
+      }
+    },
+    "removed_directed_edges": 59
+  },
+  "terrain": {
+    "directed_edges": 1972,
+    "changed_directed_edges": 1130,
+    "strengthened_directed_edges": 1130,
+    "total_absolute_change": 1.2063139623932118,
+    "mean_conductivity": 0.4210552025063546,
+    "std_conductivity": 0.013040485660635882,
+    "max_conductivity": 0.5235678209423084,
+    "effective_edge_count": 265
+  }
+}

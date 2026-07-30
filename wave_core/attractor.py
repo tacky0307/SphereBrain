@@ -187,6 +187,32 @@ class AttractorSphereCore:
             where=degree > 0,
         )
 
+    def _propagation_bias(self) -> np.ndarray:
+        """Return an optional node-wise multiplier for propagated activity.
+
+        The base attractor has no experience guidance and therefore returns
+        ones. Subclasses may expose ``experience_bias()`` to shape propagation
+        without modifying direction or capacity themselves.
+        """
+
+        provider = getattr(self, "experience_bias", None)
+        if provider is None:
+            return np.ones(self.config.node_count, dtype=float)
+
+        bias = np.asarray(provider(), dtype=float)
+        expected_shape = (self.config.node_count,)
+        if bias.shape != expected_shape:
+            raise ValueError(
+                "propagation bias must have shape "
+                f"{expected_shape}, received {bias.shape}"
+            )
+        if not np.all(np.isfinite(bias)):
+            raise ValueError("propagation bias must contain only finite values")
+        if np.any(bias < 0.0):
+            raise ValueError("propagation bias must not contain negative values")
+
+        return bias
+
     def _plasticity_update(self) -> None:
         cfg = self.config
         temporal = self.previous_activity[:, None] * self.activity[None, :]
@@ -214,12 +240,19 @@ class AttractorSphereCore:
         cfg = self.config
         current = self.activity.copy()
 
+        # Experience guidance changes how strongly activity leaves each node,
+        # while preserving learned direction probabilities and capacities.
+        # An all-ones bias reproduces the original dynamics exactly.
+        propagation_bias = self._propagation_bias()
+        effective_current = current * propagation_bias
+        effective_previous = self.previous_activity * propagation_bias
+
         direction = self._direction_probabilities()
-        transmitted = current[:, None] * direction * self.capacity
+        transmitted = effective_current[:, None] * direction * self.capacity
         feedforward = np.sum(transmitted, axis=0)
 
         recurrent = np.sum(
-            self.previous_activity[:, None] * direction * self.capacity,
+            effective_previous[:, None] * direction * self.capacity,
             axis=0,
         )
         excitation_raw = (

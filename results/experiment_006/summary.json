@@ -1,0 +1,15 @@
+{
+  "experiment": "Experiment 006: Experience Growth",
+  "brains": 1,
+  "repetitions": 10,
+  "checkpoints": [
+    1,
+    5,
+    10
+  ],
+  "reflected_mean_c_change": 0.0,
+  "control_mean_c_change": 0.0,
+  "reflected_c_winners": 0,
+  "control_c_winners": 0,
+  "note": "C does not need to win. Compare gradual C response against the local-only control."
+}
