@@ -1,9 +1,8 @@
 """Trace recording for SphereBrain v27 whole-brain formation.
 
 Trace is an observer-side record of what actually happened inside the Core.
-It does not decide what is important, does not alter learning, and does not
-interpret the meaning of a state. Reflection can later replay selected frames
-as new internal experience.
+It does not decide what is important, alter learning, or interpret meaning.
+Reflection can later replay selected frames as new internal experience.
 """
 
 from __future__ import annotations
@@ -30,7 +29,12 @@ def _copy_array(value: Any, *, name: str, ndim: int | None = None) -> Array:
 
 @dataclass(frozen=True, slots=True)
 class TraceFrame:
-    """One immutable snapshot of whole-brain activity at an internal time."""
+    """One immutable snapshot of whole-brain activity at an internal time.
+
+    ``activity`` stores the whole experience pattern used by Reflection. For a
+    compatible v27 Core this is the maximum activity reached by every node
+    during propagation, not merely the final state after activity has decayed.
+    """
 
     time_index: int
     source: str
@@ -71,8 +75,7 @@ class TraceFrame:
                 raise ValueError("stimulus must match activity shape")
             object.__setattr__(self, "stimulus", stimulus)
 
-        node_count = activity.shape[0]
-        expected_matrix_shape = (node_count, node_count)
+        expected_matrix_shape = (activity.shape[0], activity.shape[0])
 
         if self.direction is not None:
             direction = _copy_array(self.direction, name="direction", ndim=2)
@@ -103,7 +106,7 @@ class TraceFrame:
         return float(np.sum(self.activity))
 
     def replay_signal(self, gain: float = 1.0, threshold: float = 0.0) -> Array:
-        """Convert the recorded activity into a bounded reflection stimulus."""
+        """Convert the recorded experience pattern into a reflection stimulus."""
 
         if gain < 0.0:
             raise ValueError("gain must be non-negative")
@@ -117,11 +120,7 @@ class TraceFrame:
 
 
 class TraceRecorder:
-    """Append-only in-memory recorder for v27 internal time.
-
-    The recorder intentionally contains no salience ranking or semantic logic.
-    It stores frames in temporal order and offers only neutral retrieval.
-    """
+    """Append-only in-memory recorder for v27 internal time."""
 
     def __init__(self, max_frames: int | None = None) -> None:
         if max_frames is not None and max_frames <= 0:
@@ -198,7 +197,13 @@ class TraceRecorder:
         metadata: Mapping[str, Any] | None = None,
         include_structure: bool = False,
     ) -> TraceFrame:
-        """Capture a compatible Core without importing a specific Core class."""
+        """Capture a compatible Core without importing a specific Core class.
+
+        v27 Cores expose ``peak_activity``. It is preferred because Reflection
+        must replay the experienced whole-brain pattern even when final Core
+        activity has already decayed to zero. Older Cores remain compatible and
+        fall back to ``activity``.
+        """
 
         required = ("activity", "previous_activity", "fatigue")
         missing = [name for name in required if not hasattr(core, name)]
@@ -206,6 +211,8 @@ class TraceRecorder:
             raise AttributeError(
                 "core is missing required trace attributes: " + ", ".join(missing)
             )
+
+        experience_pattern = getattr(core, "peak_activity", core.activity)
 
         direction = None
         capacity = None
@@ -221,7 +228,7 @@ class TraceRecorder:
 
         return self.record(
             source=source,
-            activity=core.activity,
+            activity=experience_pattern,
             previous_activity=core.previous_activity,
             fatigue=core.fatigue,
             stimulus=stimulus,
