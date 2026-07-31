@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 import route_choice_lab as lab
@@ -133,11 +134,76 @@ def evaluate_without_structural_duplicates(
     }
 
 
+def feedback_cycle_count(text: str) -> int:
+    """Return the persisted number of completed teaching cycles for this text."""
+
+    try:
+        lab.init_feedback()
+        with sqlite3.connect(lab.FEEDBACK_DB, timeout=30) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM feedback_sessions WHERE prefix_text=?",
+                (str(text or "").strip(),),
+            ).fetchone()
+        return int(row[0]) if row else 0
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return 0
+
+
+def install_work_friendly_ui() -> None:
+    """Add persistent progress and a one-click next-cycle action for ChatGPT Work."""
+
+    page = lab.PAGE
+    page = page.replace(
+        "<p><button>経路候補を評価する</button></p>",
+        '<p><button id="evaluate-button">経路候補を評価する</button></p>',
+        1,
+    )
+    page = page.replace(
+        "</form></div>\n{% if message %}",
+        "</form></div>\n"
+        '<div class="card" id="education-progress">'
+        '<div class="eyebrow">EDUCATION PROGRESS</div>'
+        '<h2>「{{text}}」の累積教育回数：'
+        '<strong>{{feedback_cycle_count(text)}}</strong>回</h2>'
+        '<p class="muted">教育を確定し、feedback_sessionsへ正常保存された時だけ1回増えます。'
+        '一時停止や再読込の後も、この数字を基準に再開できます。</p>'
+        "</div>\n{% if message %}",
+        1,
+    )
+    page = page.replace(
+        "<button>選んだ○・△・×で教育を確定</button>",
+        '<button id="confirm-teaching-button">選んだ○・△・×で教育を確定</button>',
+        1,
+    )
+    page = page.replace(
+        "</main></body></html>",
+        "{% if comparison %}"
+        '<div class="card" id="next-cycle-card">'
+        '<div class="eyebrow">NEXT CYCLE</div>'
+        '<h2>同じ設定で次の教育サイクルへ進む</h2>'
+        '<form method="post">'
+        '<input type="hidden" name="action" value="evaluate">'
+        '<input type="hidden" name="text" value="{{text}}">'
+        '<input type="hidden" name="count" value="{{count}}">'
+        '<input type="hidden" name="decoys" value="{{decoys}}">'
+        '<button id="next-cycle-button">同じ設定で次の候補を評価</button>'
+        "</form>"
+        '<p class="muted">途中入力・候補数・偽経路数を変えずに次へ進みます。</p>'
+        "</div>"
+        "{% endif %}"
+        "</main></body></html>",
+        1,
+    )
+    lab.PAGE = page
+    lab.app.jinja_env.globals["feedback_cycle_count"] = feedback_cycle_count
+
+
 def main() -> None:
     # Flask's index handler resolves ``evaluate`` from route_choice_lab's module
     # globals at request time, so replacing it here keeps all v0.3 teaching and
     # Reflection behavior unchanged while fixing only candidate deduplication.
     lab.evaluate = evaluate_without_structural_duplicates
+    install_work_friendly_ui()
     lab.main()
 
 
