@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from hashlib import sha256
 import json
+import math
+import random
 import sqlite3
 import webbrowser
 
@@ -12,196 +16,256 @@ from waitress import serve
 from brain import SphereBrain
 
 BASE = Path(__file__).resolve().parent
-BRAIN_FILE = BASE / "data" / "brain.json"
-DB_FILE = BASE / "data" / "memory.db"
+DATA = BASE / "data"
+BRAIN_FILE = DATA / "brain.json"
+DB_FILE = DATA / "memory.db"
+FEEDBACK_FILE = DATA / "route_choice_feedback.db"
 app = Flask(__name__)
 
 
-def normalize_edge(edge) -> tuple[int, int]:
-    a, b = int(edge[0]), int(edge[1])
+@dataclass
+class RouteCandidate:
+    key: str
+    label: str
+    nodes: list[int]
+    edges: list[tuple[int, int]]
+    source_text: str
+    decoy: bool
+    score: float = 0.0
+    percent: float = 0.0
+
+
+def norm_edge(a: int, b: int) -> tuple[int, int]:
     return (a, b) if a <= b else (b, a)
 
 
-def jaccard(left: set, right: set) -> float:
-    union = left | right
-    return len(left & right) / len(union) if union else 0.0
+def route_key(edges: list[tuple[int, int]]) -> str:
+    raw = ";".join(f"{a}-{b}" for a, b in edges)
+    return sha256(raw.encode("utf-8")).hexdigest()[:20]
 
 
-def load_experiences(limit: int = 300) -> list[dict]:
+def init_feedback_db() -> None:
+    DATA.mkdir(exist_ok=True)
+    with sqlite3.connect(FEEDBACK_FILE) as conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS route_feedback (
+            prefix_signature TEXT NOT NULL,
+            route_key TEXT NOT NULL,
+            positive INTEGER NOT NULL DEFAULT 0,
+            negative INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(prefix_signature, route_key)
+        )
+        """)
+
+
+def load_routes(limit: int = 500) -> list[RouteCandidate]:
     if not DB_FILE.exists():
         return []
     with sqlite3.connect(f"file:{DB_FILE.as_posix()}?mode=ro", uri=True, timeout=30) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id,input_text,activated_nodes,traversed_edges FROM memories "
-            "WHERE kind='input' ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "SELECT input_text,activated_nodes,traversed_edges FROM memories "
+            "WHERE kind='input' ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
-    items = []
+    routes, seen = [], set()
     for row in rows:
         try:
-            nodes = {int(n) for n in json.loads(row["activated_nodes"] or "[]")}
-            edges = {normalize_edge(e) for e in json.loads(row["traversed_edges"] or "[]")}
+            edges = [norm_edge(int(e[0]), int(e[1])) for e in json.loads(row["traversed_edges"] or "[]")]
+            nodes = [int(n) for n in json.loads(row["activated_nodes"] or "[]")]
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
-        items.append({"text": row["input_text"] or "", "nodes": nodes, "edges": edges})
-    return items
-
-
-def edge_score(brain: SphereBrain, source: int, target: int, visited: set[int]) -> tuple[float, float, int, int]:
-    weight = float(brain.weights[source, target])
-    usage = int(brain.usage[source, target])
-    target_usage = int(brain.node_usage[target])
-    learned = usage / (usage + 4.0)
-    familiar_target = target_usage / (target_usage + 12.0)
-    revisit_penalty = 0.35 if target in visited else 1.0
-    score = (0.55 * weight + 0.35 * learned + 0.10 * familiar_target) * revisit_penalty
-    return score, weight, usage, target_usage
-
-
-def ranked_choices(brain: SphereBrain, source: int, previous: int | None, visited: set[int]) -> list[dict]:
-    neighbors = [int(n) for n in np.flatnonzero(brain.adjacency[source])]
-    candidates = []
-    for target in neighbors:
-        if previous is not None and target == previous and len(neighbors) > 1:
+        if len(edges) < 2:
             continue
-        score, weight, usage, target_usage = edge_score(brain, source, target, visited)
-        candidates.append({
-            "target": target,
-            "score": score,
-            "weight": weight,
-            "usage": usage,
-            "target_usage": target_usage,
-            "revisited": target in visited,
-        })
-    candidates.sort(key=lambda item: (-item["score"], -item["usage"], -item["weight"], item["target"]))
-    return candidates
+        key = route_key(edges)
+        if key in seen:
+            continue
+        seen.add(key)
+        routes.append(RouteCandidate(key, "", nodes, edges, row["input_text"] or "(名称なし)", False))
+    return routes
 
 
-def choose_start(brain: SphereBrain, sources: list[int]) -> tuple[int, list[dict]]:
-    starts = []
+def prefix_signature(brain: SphereBrain, text: str) -> tuple[str, list[int]]:
+    sources = [int(n) for n in brain.text_to_sources(text)]
+    signature = sha256(",".join(map(str, sorted(sources))).encode("utf-8")).hexdigest()[:20]
+    return signature, sources
+
+
+def feedback_bias(signature: str, key: str) -> float:
+    init_feedback_db()
+    with sqlite3.connect(FEEDBACK_FILE) as conn:
+        row = conn.execute(
+            "SELECT positive,negative FROM route_feedback WHERE prefix_signature=? AND route_key=?",
+            (signature, key),
+        ).fetchone()
+    if row is None:
+        return 0.0
+    positive, negative = int(row[0]), int(row[1])
+    return (positive - negative) / (positive + negative + 3.0)
+
+
+def make_decoys(real_routes: list[RouteCandidate], count: int, seed_text: str) -> list[RouteCandidate]:
+    rng = random.Random(int.from_bytes(sha256(seed_text.encode("utf-8")).digest()[:8], "big"))
+    if len(real_routes) < 2:
+        return []
+    decoys, used = [], {r.key for r in real_routes}
+    attempts = 0
+    while len(decoys) < count and attempts < count * 20:
+        attempts += 1
+        left, right = rng.sample(real_routes, 2)
+        cut_l = max(1, len(left.edges) // 2)
+        cut_r = max(1, len(right.edges) // 2)
+        edges = left.edges[:cut_l] + right.edges[-cut_r:]
+        rng.shuffle(edges)
+        key = route_key(edges)
+        if key in used or len(edges) < 2:
+            continue
+        used.add(key)
+        nodes = sorted({n for edge in edges for n in edge})
+        decoys.append(RouteCandidate(key, "", nodes, edges, "偽経路（複数経験を組み替え）", True))
+    return decoys
+
+
+def score_candidate(brain: SphereBrain, sources: list[int], signature: str, candidate: RouteCandidate) -> float:
+    weights, usages = [], []
+    for a, b in candidate.edges:
+        if 0 <= a < brain.node_count and 0 <= b < brain.node_count and brain.adjacency[a, b]:
+            weights.append(float(brain.weights[a, b]))
+            usages.append(int(brain.usage[a, b]))
+    strength = float(np.mean(weights)) if weights else 0.0
+    familiarity = float(np.mean([u / (u + 5.0) for u in usages])) if usages else 0.0
+
+    route_nodes = set(candidate.nodes)
+    adjacency_hits = 0
+    spatial = []
     for source in sources:
-        choices = ranked_choices(brain, source, None, {source})
-        best = choices[0] if choices else None
-        starts.append({
-            "source": source,
-            "best_score": best["score"] if best else -1.0,
-            "best_target": best["target"] if best else None,
-            "best_usage": best["usage"] if best else 0,
-            "best_weight": best["weight"] if best else 0.0,
-        })
-    starts.sort(key=lambda item: (-item["best_score"], -item["best_usage"], -item["best_weight"], item["source"]))
-    return starts[0]["source"], starts
+        neighbors = set(np.flatnonzero(brain.adjacency[source]).tolist())
+        if neighbors & route_nodes:
+            adjacency_hits += 1
+        if route_nodes:
+            distances = np.linalg.norm(brain.positions[list(route_nodes)] - brain.positions[source], axis=1)
+            spatial.append(1.0 / (1.0 + float(np.min(distances))))
+    entry_affinity = 0.6 * (adjacency_hits / max(1, len(sources))) + 0.4 * (float(np.mean(spatial)) if spatial else 0.0)
+    learned = feedback_bias(signature, candidate.key)
+    decoy_penalty = 0.05 if candidate.decoy else 0.0
+    return 0.42 * strength + 0.28 * familiarity + 0.20 * entry_affinity + 0.15 * learned - decoy_penalty
 
 
-def run_forced_probe(text: str, steps: int) -> dict:
+def build_candidates(text: str, candidate_count: int, decoy_count: int) -> dict:
     if not BRAIN_FILE.exists():
-        raise FileNotFoundError("data/brain.json がありません。先に通常のSphereBrainを起動してください。")
-
+        raise FileNotFoundError("data/brain.json がありません。")
     brain = SphereBrain.load(BRAIN_FILE)
-    source_nodes = [int(n) for n in brain.text_to_sources(text)]
-    current, start_options = choose_start(brain, source_nodes)
-    path = [current]
-    visited = {current}
-    decisions = []
-    previous = None
+    signature, sources = prefix_signature(brain, text)
+    all_real = load_routes()
+    if not all_real:
+        raise RuntimeError("候補に使える過去経路がありません。先に通常入力で経験を蓄積してください。")
 
-    for step in range(steps):
-        choices = ranked_choices(brain, current, previous, visited)
-        if not choices:
-            break
+    for route in all_real:
+        route.score = score_candidate(brain, sources, signature, route)
+    all_real.sort(key=lambda r: (-r.score, r.key))
+    real = all_real[:max(2, candidate_count - decoy_count)]
+    candidates = real + make_decoys(all_real[:40], decoy_count, text)
+    for route in candidates:
+        route.score = score_candidate(brain, sources, signature, route)
+    candidates.sort(key=lambda r: (-r.score, r.key))
 
-        unvisited = [choice for choice in choices if not choice["revisited"]]
-        selected = unvisited[0] if unvisited else choices[0]
-        alternatives = []
-        for rank, choice in enumerate(choices[:5], 1):
-            alternatives.append({
-                "rank": rank,
-                "target": choice["target"],
-                "score": round(choice["score"] * 100, 1),
-                "weight": round(choice["weight"], 4),
-                "usage": choice["usage"],
-                "revisited": choice["revisited"],
-                "selected": choice["target"] == selected["target"],
-            })
+    exps = [math.exp((c.score - max(x.score for x in candidates)) * 7.0) for c in candidates]
+    total = sum(exps) or 1.0
+    for index, (candidate, value) in enumerate(zip(candidates, exps)):
+        candidate.label = chr(ord("A") + index)
+        candidate.percent = value / total * 100.0
 
-        next_node = int(selected["target"])
-        decisions.append({
-            "step": step + 1,
-            "source": current,
-            "target": next_node,
-            "score": round(selected["score"] * 100, 1),
-            "weight": round(selected["weight"], 4),
-            "usage": selected["usage"],
-            "alternatives": alternatives,
-        })
-        previous, current = current, next_node
-        path.append(current)
-        if current in visited:
-            break
-        visited.add(current)
+    return {"signature": signature, "sources": sources, "candidates": candidates}
 
-    path_edges = {normalize_edge((path[i], path[i + 1])) for i in range(len(path) - 1)}
-    path_nodes = set(path)
-    matches = []
-    for memory in load_experiences():
-        node_score = jaccard(path_nodes, memory["nodes"])
-        edge_score_value = jaccard(path_edges, memory["edges"])
-        score = 0.25 * node_score + 0.75 * edge_score_value if path_edges else node_score
-        if score <= 0:
-            continue
-        matches.append({
-            "text": memory["text"],
-            "score": round(score * 100, 1),
-            "nodes": round(node_score * 100, 1),
-            "edges": round(edge_score_value * 100, 1),
-        })
-    matches.sort(key=lambda item: (-item["score"], item["text"]))
 
-    return {
-        "source_nodes": source_nodes,
-        "chosen_start": path[0],
-        "start_options": start_options,
-        "path": path,
-        "edges": sorted(path_edges),
-        "decisions": decisions,
-        "matches": matches[:12],
-    }
+def apply_feedback(text: str, payload: list[dict], correct_key: str) -> str:
+    brain = SphereBrain.load(BRAIN_FILE)
+    signature, sources = prefix_signature(brain, text)
+    init_feedback_db()
+
+    with sqlite3.connect(FEEDBACK_FILE) as conn:
+        for item in payload:
+            key = str(item["key"])
+            positive = 1 if key == correct_key else 0
+            negative = 0 if key == correct_key else 1
+            conn.execute("""
+                INSERT INTO route_feedback(prefix_signature,route_key,positive,negative)
+                VALUES(?,?,?,?)
+                ON CONFLICT(prefix_signature,route_key) DO UPDATE SET
+                  positive=positive+excluded.positive,
+                  negative=negative+excluded.negative,
+                  updated_at=CURRENT_TIMESTAMP
+            """, (signature, key, positive, negative))
+
+    for item in payload:
+        is_correct = str(item["key"]) == correct_key
+        for a, b in item.get("edges", []):
+            a, b = int(a), int(b)
+            if not (0 <= a < brain.node_count and 0 <= b < brain.node_count and brain.adjacency[a, b]):
+                continue
+            if is_correct:
+                brain.weights[a, b] = brain.weights[b, a] = min(1.0, brain.weights[a, b] + 0.04 * (1.0 - brain.weights[a, b]))
+                brain.usage[a, b] += 1
+                brain.usage[b, a] += 1
+                brain.node_usage[a] += 1
+                brain.node_usage[b] += 1
+            else:
+                brain.weights[a, b] = brain.weights[b, a] = max(0.05, brain.weights[a, b] * 0.985)
+
+    correct = next((item for item in payload if str(item["key"]) == correct_key), None)
+    if correct:
+        route_nodes = {int(n) for edge in correct.get("edges", []) for n in edge}
+        for source in sources:
+            neighbors = [int(n) for n in np.flatnonzero(brain.adjacency[source]) if int(n) in route_nodes]
+            for target in neighbors:
+                brain.weights[source, target] = brain.weights[target, source] = min(1.0, brain.weights[source, target] + 0.06 * (1.0 - brain.weights[source, target]))
+                brain.usage[source, target] += 1
+                brain.usage[target, source] += 1
+
+    brain.save(BRAIN_FILE)
+    return "正解経路を強化し、その他の候補経路を弱くしました。"
 
 
 PAGE = """
 <!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SphereBrain Forced Route Choice Probe v0.3</title>
+<title>SphereBrain Route Choice Learning Lab</title>
 <style>
-:root{--bg:#07111f;--panel:#10223a;--line:#284a70;--text:#edf4ff;--muted:#9ab0ca;--cyan:#69dcff;--orange:#ff9d52;--green:#8ce3a9;--yellow:#ffd166}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top right,rgba(80,145,210,.17),transparent 35%),var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif}.wrap{max-width:1240px;margin:auto;padding:22px}.card{background:linear-gradient(180deg,#122744,#0d1d31);border:1px solid var(--line);border-radius:18px;padding:20px;margin:18px 0}.grid{display:grid;grid-template-columns:1fr 220px;gap:14px}input{width:100%;background:#071522;color:var(--text);border:1px solid #345c86;border-radius:10px;padding:12px;font-size:16px}button{background:linear-gradient(135deg,#ec6f35,#ff9d52);border:0;color:white;border-radius:10px;padding:12px 18px;font-weight:800}.eyebrow{color:var(--cyan);font-size:12px;letter-spacing:.12em;text-transform:uppercase}.muted{color:var(--muted)}.note{border-left:3px solid var(--cyan);padding-left:12px;color:var(--muted)}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.stat,.decision{background:#071522;border:1px solid var(--line);border-radius:14px;padding:15px}.value{font-size:28px;font-weight:800}.chain{display:flex;gap:7px;flex-wrap:wrap;align-items:center}.node{background:#071522;border:1px solid var(--line);border-radius:999px;padding:7px 10px;color:var(--cyan)}.chosen{border-color:var(--green);color:var(--green)}.arrow{color:var(--muted)}.decision{margin:12px 0}.alternatives{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:12px}.alternative{border:1px solid var(--line);border-radius:10px;padding:9px}.alternative.selected{border-color:var(--green);background:rgba(140,227,169,.08)}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid var(--line)}th{color:var(--muted)}.score{font-size:21px;font-weight:800}@media(max-width:800px){.grid,.stats,.alternatives{grid-template-columns:1fr}th:nth-child(n+4),td:nth-child(n+4){display:none}}
+:root{--bg:#07111f;--panel:#10223a;--line:#284a70;--text:#edf4ff;--muted:#9ab0ca;--cyan:#69dcff;--orange:#ff9d52;--green:#8ce3a9;--red:#ff8585}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif}.wrap{max-width:1180px;margin:auto;padding:22px}.card{background:linear-gradient(180deg,#122744,#0d1d31);border:1px solid var(--line);border-radius:18px;padding:20px;margin:18px 0}.grid{display:grid;grid-template-columns:1fr 180px 180px;gap:12px}input{width:100%;background:#071522;color:var(--text);border:1px solid #345c86;border-radius:10px;padding:12px;font-size:16px}button{background:linear-gradient(135deg,#ec6f35,#ff9d52);border:0;color:#fff;border-radius:10px;padding:12px 18px;font-weight:800;cursor:pointer}.eyebrow{color:var(--cyan);font-size:12px;letter-spacing:.12em}.muted{color:var(--muted)}.note{border-left:3px solid var(--cyan);padding-left:12px}.candidate{display:grid;grid-template-columns:70px 120px 1fr 150px;gap:14px;align-items:center;padding:15px 0;border-bottom:1px solid var(--line)}.letter{font-size:32px;font-weight:900;color:var(--cyan)}.percent{font-size:28px;font-weight:900}.route{font-family:ui-monospace,monospace;color:#bfeeff;word-break:break-all}.decoy{color:var(--red)}.real{color:var(--green)}.feedback{display:flex;gap:9px;flex-wrap:wrap}.choice{background:#071522;border:1px solid var(--line);padding:9px 13px;border-radius:9px}.success{border-color:var(--green);color:var(--green)}@media(max-width:760px){.grid,.candidate{grid-template-columns:1fr}.candidate{gap:5px}}
 </style></head><body><main class="wrap">
-<div class="card"><div class="eyebrow">Forced Route Choice Probe v0.3</div><h1>SphereBrainに経路を選ばせる</h1><p class="muted">途中入力から伝播を待つのではなく、各分岐で保存済みCoreの重みと使用履歴が最も強い経路を必ず一本選ばせます。</p></div>
-<div class="card"><form method="post"><div class="grid"><div><div class="eyebrow">Partial Input</div><h2>途中まで入力</h2><input name="text" value="{{text}}" placeholder="犬は" required></div><div><div class="eyebrow">Choice Steps</div><h2>選択段数</h2><input name="steps" type="number" min="1" max="60" value="{{steps}}"></div></div><p><button type="submit">経路を選ばせる</button></p></form><p class="note">閾値で止めません。言葉の候補も与えません。各地点から選べる経路を順位付けし、最上位を強制的に選択します。学習・保存・経路強化は行いません。</p></div>
-{% if error %}<div class="card"><strong>{{error}}</strong></div>{% endif %}
-{% if result %}
-<div class="card"><div class="eyebrow">Selected Route</div><h2>「{{text}}」からSphereBrainが選んだ一本</h2><div class="stats"><div class="stat"><div class="muted">入口候補</div><div class="value">{{result.source_nodes|length}}</div><div>{{result.source_nodes}}</div></div><div class="stat"><div class="muted">選択した入口</div><div class="value">{{result.chosen_start}}</div></div><div class="stat"><div class="muted">選択した経路数</div><div class="value">{{result.edges|length}}</div></div></div><div class="chain" style="margin-top:18px">{% for n in result.path %}<span class="node {% if loop.first %}chosen{% endif %}">{{n}}</span>{% if not loop.last %}<span class="arrow">→</span>{% endif %}{% endfor %}</div></div>
-<div class="card"><div class="eyebrow">Choice Log</div><h2>各分岐で何を選んだか</h2>{% for d in result.decisions %}<div class="decision"><strong>Step {{d.step}}: {{d.source}} → {{d.target}}</strong><span class="muted">　選択度 {{d.score}}% / weight {{d.weight}} / usage {{d.usage}}</span><div class="alternatives">{% for a in d.alternatives %}<div class="alternative {% if a.selected %}selected{% endif %}"><strong>#{{a.rank}} → {{a.target}}</strong><div>{{a.score}}%</div><div class="muted">w {{a.weight}} / use {{a.usage}}</div>{% if a.selected %}<div style="color:var(--green)">選択</div>{% endif %}</div>{% endfor %}</div></div>{% else %}<p class="muted">入口から選べる接続がありませんでした。</p>{% endfor %}</div>
-<div class="card"><div class="eyebrow">Observer Interpretation</div><h2>選ばれた経路に近かった過去経験</h2><p class="note">ここに出る言葉は回答ではありません。SphereBrainが選んだ経路を、Observerが過去経験へ後から照合した説明です。</p><table><thead><tr><th>過去経験</th><th>経路全体の近さ</th><th>ノード一致</th><th>エッジ一致</th></tr></thead><tbody>{% for m in result.matches %}<tr><td><strong>{{m.text}}</strong></td><td class="score">{{m.score}}%</td><td>{{m.nodes}}%</td><td>{{m.edges}}%</td></tr>{% else %}<tr><td colspan="4" class="muted">近い過去経験は見つかりませんでした。</td></tr>{% endfor %}</tbody></table></div>
-{% endif %}
+<div class="card"><div class="eyebrow">ROUTE CHOICE LEARNING LAB v0.1</div><h1>SphereBrainに経路を提示し、選択を教える</h1><p class="muted">Coreへ渡す候補は言葉ではなく経路です。表示上だけA・B・Cへ翻訳します。</p></div>
+<div class="card"><form method="post"><input type="hidden" name="action" value="evaluate"><div class="grid"><div><div class="eyebrow">PARTIAL INPUT</div><h2>途中入力</h2><input name="text" value="{{text}}" required></div><div><div class="eyebrow">CANDIDATES</div><h2>候補数</h2><input name="count" type="number" min="3" max="8" value="{{count}}"></div><div><div class="eyebrow">DECOYS</div><h2>偽経路数</h2><input name="decoys" type="number" min="0" max="4" value="{{decoys}}"></div></div><p><button type="submit">経路候補を評価する</button></p></form><p class="note muted">評価時は読み取りのみ。下の○を教える操作をした時だけbrain.jsonを更新します。</p></div>
+{% if message %}<div class="card success">{{message}}</div>{% endif %}{% if error %}<div class="card decoy">{{error}}</div>{% endif %}
+{% if result %}<div class="card"><div class="eyebrow">RESONANCE</div><h2>「{{text}}」に対する経路候補</h2>
+{% for c in result.candidates %}<div class="candidate"><div class="letter">{{c.label}}</div><div class="percent">{{'%.1f'|format(c.percent)}}%</div><div><div class="route">{% for e in c.edges[:10] %}{{e[0]}}→{{e[1]}}{% if not loop.last %} / {% endif %}{% endfor %}</div><div class="{% if c.decoy %}decoy{% else %}real{% endif %}">{% if c.decoy %}偽経路{% else %}実経験経路{% endif %} — {{c.source_text}}</div></div><form method="post"><input type="hidden" name="action" value="feedback"><input type="hidden" name="text" value="{{text}}"><input type="hidden" name="payload" value='{{payload}}'><input type="hidden" name="correct_key" value="{{c.key}}"><button type="submit">{{c.label}} が○</button></form></div>{% endfor %}
+<p class="note muted">選ばなかった候補はすべて×として学習します。偽経路を○にすることもできますが、実験意図と異なるため通常は選ばないでください。</p></div>{% endif %}
 </main></body></html>
 """
 
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    text = "犬は"
-    steps = 24
+    text, count, decoys = "犬は", 5, 2
     result = None
-    error = ""
+    payload = ""
+    message = error = ""
     if request.method == "POST":
+        action = request.form.get("action", "evaluate")
         text = request.form.get("text", "").strip()
         try:
-            steps = max(1, min(60, int(request.form.get("steps", "24"))))
-            result = run_forced_probe(text, steps)
+            if action == "feedback":
+                raw = json.loads(request.form.get("payload", "[]"))
+                message = apply_feedback(text, raw, request.form.get("correct_key", ""))
+                result = build_candidates(text, count, decoys)
+            else:
+                count = max(3, min(8, int(request.form.get("count", "5"))))
+                decoys = max(0, min(min(4, count - 1), int(request.form.get("decoys", "2"))))
+                result = build_candidates(text, count, decoys)
+            if result:
+                payload = json.dumps([{"key": c.key, "edges": c.edges} for c in result["candidates"]], separators=(",", ":"))
         except Exception as exc:
             error = str(exc)
-    return render_template_string(PAGE, text=text, steps=steps, result=result, error=error)
+    return render_template_string(PAGE, text=text, count=count, decoys=decoys, result=result, payload=payload, message=message, error=error)
 
 
 def main() -> None:
