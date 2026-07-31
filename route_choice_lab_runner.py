@@ -391,8 +391,23 @@ def snapshot_candidates_with_modes(
     source_tree = lab.build_source_tree(brain, sources)
     feedback_lookup = lab.feedback_map(prefix)
     unique_references, _ = deduplicate_routes(references)
+    reference_by_signature = {
+        structural_route_signature(reference): reference
+        for reference in unique_references
+    }
 
     for candidate in candidates:
+        matching_reference = reference_by_signature.get(
+            structural_route_signature(candidate)
+        )
+        if matching_reference is not None:
+            candidate.route_alias_keys = list(
+                getattr(
+                    matching_reference,
+                    "route_alias_keys",
+                    [matching_reference.key],
+                )
+            )
         _decorate_identity(candidate)
         lab.decode_candidate(text, candidate, unique_references)
 
@@ -552,6 +567,16 @@ def build_core_audit(
         (int(a), int(b))
         for a, b in zip(*np.where(usage_changed_mask))
     }
+    normalized_expected_usage_edges = {
+        lab.norm(int(a), int(b))
+        for a, b in expected_usage_edges
+    }
+    unexpected_usage_pairs = (
+        usage_changed_pairs - normalized_expected_usage_edges
+    )
+    expected_usage_changed = (
+        usage_changed_pairs & normalized_expected_usage_edges
+    )
 
     node_usage_before = np.asarray(before_brain.node_usage, dtype=int)
     node_usage_after = np.asarray(after_brain.node_usage, dtype=int)
@@ -560,6 +585,13 @@ def build_core_audit(
         int(node)
         for node in np.flatnonzero(node_usage_delta != 0)
     }
+    normalized_expected_nodes = {
+        int(node)
+        for node in expected_used_nodes
+        if 0 <= int(node) < node_count
+    }
+    unexpected_changed_nodes = changed_nodes - normalized_expected_nodes
+    expected_nodes_changed = changed_nodes & normalized_expected_nodes
 
     adjacency_delta = upper & (adjacency_before != adjacency_after)
     changed_values = np.abs(weight_delta[changed_mask])
@@ -588,7 +620,11 @@ def build_core_audit(
     if expected_pairs and not changed_pairs:
         warnings.append("教育信号はありましたが、Core重みの変化を検出できませんでした。")
     if unexpected_pairs:
-        warnings.append("教育対象外のエッジ変化を検出しました。")
+        warnings.append("教育対象外の重みエッジ変化を検出しました。")
+    if unexpected_usage_pairs:
+        warnings.append("教育対象外のusageエッジ変化を検出しました。")
+    if unexpected_changed_nodes:
+        warnings.append("教育対象外のnode_usage変化を検出しました。")
     if np.any(adjacency_delta):
         warnings.append("教育中に隣接構造そのものが変化しました。")
     if hash_before == hash_after and core_changed:
@@ -599,6 +635,8 @@ def build_core_audit(
     audit_ok = bool(
         core_changed
         and not unexpected_pairs
+        and not unexpected_usage_pairs
+        and not unexpected_changed_nodes
         and not np.any(adjacency_delta)
     )
     return {
@@ -618,18 +656,61 @@ def build_core_audit(
         "expected_signal_edges_changed": len(expected_changed),
         "expected_signal_edges_unchanged": len(expected_unchanged),
         "unexpected_edges_changed": len(unexpected_pairs),
-        "usage_edges_expected": len(expected_usage_edges),
+        "usage_edges_expected": len(normalized_expected_usage_edges),
+        "usage_edges_expected_changed": len(expected_usage_changed),
         "usage_edges_changed": len(usage_changed_pairs),
+        "unexpected_usage_edges_changed": len(unexpected_usage_pairs),
         "usage_total_delta": int(usage_delta[usage_changed_mask].sum())
         if np.any(usage_changed_mask)
         else 0,
-        "expected_used_nodes": len(expected_used_nodes),
+        "expected_used_nodes": len(normalized_expected_nodes),
+        "expected_used_nodes_changed": len(expected_nodes_changed),
         "node_usage_changed": len(changed_nodes),
+        "unexpected_node_usage_changed": len(unexpected_changed_nodes),
         "node_usage_total_delta": int(node_usage_delta.sum()),
         "adjacency_changes": int(np.count_nonzero(adjacency_delta)),
         "changed_edge_samples": samples,
         "warnings": warnings,
         "status_label": "正常" if audit_ok else "要確認",
+    }
+
+
+def _failed_core_audit(
+    hash_before: str,
+    hash_after: str,
+    error: Exception,
+) -> dict[str, Any]:
+    return {
+        "core_changed": False,
+        "audit_ok": False,
+        "hash_before": hash_before,
+        "hash_after": hash_after,
+        "hash_before_short": hash_before[:12] if hash_before else "(取得失敗)",
+        "hash_after_short": hash_after[:12] if hash_after else "(取得失敗)",
+        "hash_changed": bool(hash_before and hash_after and hash_before != hash_after),
+        "changed_edges": 0,
+        "strengthened_edges": 0,
+        "weakened_edges": 0,
+        "total_abs_weight_delta": 0.0,
+        "max_abs_weight_delta": 0.0,
+        "expected_signal_edges": 0,
+        "expected_signal_edges_changed": 0,
+        "expected_signal_edges_unchanged": 0,
+        "unexpected_edges_changed": 0,
+        "usage_edges_expected": 0,
+        "usage_edges_expected_changed": 0,
+        "usage_edges_changed": 0,
+        "unexpected_usage_edges_changed": 0,
+        "usage_total_delta": 0,
+        "expected_used_nodes": 0,
+        "expected_used_nodes_changed": 0,
+        "node_usage_changed": 0,
+        "unexpected_node_usage_changed": 0,
+        "node_usage_total_delta": 0,
+        "adjacency_changes": 0,
+        "changed_edge_samples": [],
+        "warnings": [f"教育は完了しましたが、Core監査に失敗しました: {error}"],
+        "status_label": "監査失敗",
     }
 
 
@@ -666,6 +747,27 @@ def _persist_core_audit(session_id: str, audit: dict[str, Any]) -> None:
 def _augment_comparison_from_saved_snapshots(
     comparison: dict[str, Any],
 ) -> None:
+    for item in comparison.get("items", []):
+        route_key = str(item.get("key", ""))
+        item["route_fingerprint"] = route_key[:10].upper()
+        for mode in MODE_ORDER:
+            item[f"{mode}_before_percent"] = float(
+                item.get("before_percent", 0.0)
+            )
+            item[f"{mode}_after_percent"] = float(
+                item.get("after_percent", 0.0)
+            )
+            item[f"{mode}_delta"] = (
+                item[f"{mode}_after_percent"]
+                - item[f"{mode}_before_percent"]
+            )
+            item[f"{mode}_rank_before"] = int(
+                item.get("rank_before", 0)
+            )
+            item[f"{mode}_rank_after"] = int(
+                item.get("rank_after", 0)
+            )
+
     session_id = str(comparison.get("session_id", ""))
     if not session_id:
         return
@@ -737,20 +839,29 @@ def teach_with_core_audit(
 
     message, result, comparison = ORIGINAL_TEACH(text, payload, grades)
 
-    after_brain = lab.SphereBrain.load(lab.BRAIN_FILE)
     hash_after = _file_sha256(lab.BRAIN_FILE)
-    audit = build_core_audit(
-        before_brain,
-        after_brain,
-        hash_before=hash_before,
-        hash_after=hash_after,
-        expected_signals=expected_signals,
-        expected_usage_edges=expected_usage_edges,
-        expected_used_nodes=expected_used_nodes,
-    )
+    try:
+        after_brain = lab.SphereBrain.load(lab.BRAIN_FILE)
+        audit = build_core_audit(
+            before_brain,
+            after_brain,
+            hash_before=hash_before,
+            hash_after=hash_after,
+            expected_signals=expected_signals,
+            expected_usage_edges=expected_usage_edges,
+            expected_used_nodes=expected_used_nodes,
+        )
+    except Exception as exc:  # Education already succeeded; never invite a retry.
+        audit = _failed_core_audit(hash_before, hash_after, exc)
+
     _augment_comparison_from_saved_snapshots(comparison)
     comparison["core_audit"] = audit
-    _persist_core_audit(str(comparison["session_id"]), audit)
+    try:
+        _persist_core_audit(str(comparison["session_id"]), audit)
+    except (OSError, sqlite3.Error) as exc:
+        audit["audit_ok"] = False
+        audit["status_label"] = "要確認"
+        audit["warnings"].append(f"Core監査ログの保存に失敗しました: {exc}")
 
     for candidate in result.get("candidates", []):
         _decorate_identity(candidate)
@@ -810,6 +921,19 @@ def install_research_ui() -> None:
         1,
     )
     page = page.replace(
+        ".candidate-head{display:grid;grid-template-columns:1fr 150px auto;",
+        ".candidate-head{display:grid;grid-template-columns:minmax(240px,1fr) "
+        "minmax(330px,520px) auto;",
+        1,
+    )
+    page = page.replace(
+        "@media(max-width:900px){.summary-grid{grid-template-columns:repeat(3,1fr)}}",
+        "@media(max-width:1100px){.candidate-head{grid-template-columns:1fr}"
+        ".mode-grid{min-width:0}.audit-grid{grid-template-columns:repeat(2,1fr)}}"
+        "@media(max-width:900px){.summary-grid{grid-template-columns:repeat(3,1fr)}}",
+        1,
+    )
+    page = page.replace(
         "@media(max-width:760px){.grid,.candidate-head{grid-template-columns:1fr}",
         "@media(max-width:760px){.grid,.candidate-head{grid-template-columns:1fr}"
         ".mode-grid,.audit-grid{grid-template-columns:1fr;min-width:0}",
@@ -839,7 +963,7 @@ def install_research_ui() -> None:
         "{% if result %}\n"
         '<div class="card"><div class="eyebrow">EVALUATION LAYERS</div>'
         "<h2>同じ候補を3つの層で比較</h2>"
-        '<p class="muted"><strong>総合</strong>＝Core＋外部Feedback、'
+        '<p class="muted"><strong>総合</strong>＝Core＋外部Feedback＋現行の偽経路補正、'
         "<strong>Core-only</strong>＝経路重み・使用経験・入口橋・幾何だけ、"
         "<strong>Feedback-only</strong>＝○・△・×の外部教師履歴だけ。"
         "候補カードの3数値は同じ候補集合内で正規化しています。</p></div>\n"
@@ -953,7 +1077,9 @@ def install_research_ui() -> None:
         "{{comparison.core_audit.expected_signal_edges_unchanged}}</small></div>"
         '<div class="audit-box"><span>想定外変更</span><strong>'
         "{{comparison.core_audit.unexpected_edges_changed}}</strong><small>"
-        "隣接構造変更 {{comparison.core_audit.adjacency_changes}}</small></div>"
+        "重み / usage {{comparison.core_audit.unexpected_usage_edges_changed}} / "
+        "node {{comparison.core_audit.unexpected_node_usage_changed}} / "
+        "隣接 {{comparison.core_audit.adjacency_changes}}</small></div>"
         '<div class="audit-box"><span>重み変化量 L1</span><strong>'
         "{{'%.8f'|format(comparison.core_audit.total_abs_weight_delta)}}"
         "</strong><small>最大 "
