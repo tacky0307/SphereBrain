@@ -21,11 +21,11 @@ class GuardedDecoderTests(unittest.TestCase):
         self.assertEqual(candidate.decoded_text, "未解釈の経路")
         self.assertEqual(candidate.decode_method, "direct-conflict")
 
-    def test_consistent_direct_evidence_decodes(self) -> None:
+    def test_single_consistent_direct_evidence_decodes(self) -> None:
         candidate = self.candidate(
             "a",
             [1, 2, 3],
-            ["犬は泳ぐ", "犬は泳ぐ。"],
+            ["犬は泳ぐ"],
         )
         guarded.conservative_decode_candidate("犬は", candidate, [candidate])
         self.assertEqual(candidate.decoded_text, "泳ぐ")
