@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import sys
 from datetime import datetime
 from pathlib import Path
 
 
-TARGET_FILES = (
+TARGET_FILES = {
     "brain.json",
     "branch_observer.db",
     "memory.db",
     "pattern_candidates.db",
     "route_choice_feedback.db",
-)
+}
+EXCLUDED_DIRS = {".git", ".venv", "venv", "__pycache__", "backups"}
 
 
 def project_root() -> Path:
@@ -21,18 +21,21 @@ def project_root() -> Path:
 
 
 def find_targets(root: Path) -> list[Path]:
-    """Find generated data in both supported layouts.
-
-    Older work folders keep the files beside this script, while the current
-    repository normally stores them under data/.
-    """
+    """Find generated data anywhere in the project, excluding backups."""
     candidates: list[Path] = []
-    for directory in (root, root / "data"):
-        for name in TARGET_FILES:
-            path = directory / name
-            if path.is_file():
-                candidates.append(path)
-    return candidates
+
+    for path in root.rglob("*"):
+        if not path.is_file() or path.name not in TARGET_FILES:
+            continue
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            continue
+        if any(part in EXCLUDED_DIRS for part in relative.parts[:-1]):
+            continue
+        candidates.append(path)
+
+    return sorted(candidates, key=lambda item: str(item.relative_to(root)).casefold())
 
 
 def backup_targets(root: Path, targets: list[Path]) -> Path:
@@ -53,6 +56,8 @@ def delete_targets(targets: list[Path]) -> tuple[list[Path], list[tuple[Path, st
     failed: list[tuple[Path, str]] = []
 
     for path in targets:
+        if not path.exists():
+            continue
         try:
             path.unlink()
             deleted.append(path)
@@ -66,11 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="SphereBrainの生成データをバックアップして初期化します。"
     )
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="確認入力を省略します。",
-    )
+    parser.add_argument("--yes", action="store_true", help="確認入力を省略します。")
     return parser.parse_args()
 
 
@@ -103,18 +104,27 @@ def main() -> int:
         print(f"バックアップに失敗したため、初期化を中止しました: {exc}")
         return 1
 
-    deleted, failed = delete_targets(targets)
-
     print(f"\nバックアップ先: {backup_dir.relative_to(root)}")
-    for path in deleted:
-        print(f"削除: {path.relative_to(root)}")
+    remaining = list(targets)
 
-    if failed:
-        print("\n削除できなかったファイルがあります。")
-        print("SphereBrainや関連画面を閉じて、もう一度実行してください。")
-        for path, error in failed:
-            print(f"  - {path.relative_to(root)}: {error}")
-        return 1
+    while remaining:
+        deleted, failed = delete_targets(remaining)
+        for path in deleted:
+            print(f"削除: {path.relative_to(root)}")
+
+        if not failed:
+            break
+
+        print("\n使用中で削除できないファイルがあります。")
+        for path, _error in failed:
+            print(f"  - {path.relative_to(root)}")
+        print("\nSphereBrainを起動した黒い画面を閉じてください。")
+        print("ブラウザだけでなく、サーバーを実行している画面も閉じる必要があります。")
+        answer = input("閉じたら Enter で再試行、Q で中止: ").strip().casefold()
+        if answer == "q":
+            print("初期化を中止しました。バックアップは残っています。")
+            return 1
+        remaining = [path for path, _error in failed]
 
     print("\n初期化が完了しました。次回起動時に新しいデータが作成されます。")
     return 0
