@@ -13,9 +13,9 @@ PAGE = r"""
 <title>SphereBrain Semantic Encoder v2 Lab</title>
 <style>
 :root{--bg:#07111f;--panel:#10223a;--line:#294d76;--text:#eef5ff;--muted:#9bb1ca;--cyan:#67dcff;--orange:#f28b4b;--green:#67e59a}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif}.wrap{max-width:1400px;margin:auto;padding:24px}header{background:linear-gradient(135deg,#112743,#091524);border-bottom:1px solid var(--line)}h1{margin:0 0 8px}.muted,p{color:var(--muted)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:linear-gradient(180deg,#132944,#0c1b2f);border:1px solid var(--line);border-radius:18px;padding:20px;margin-top:18px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.stat{background:#071522;border:1px solid var(--line);border-radius:14px;padding:14px}.value{font-size:30px;font-weight:800}.eyebrow{color:var(--cyan);font-size:12px;letter-spacing:.12em;text-transform:uppercase}label{display:block;color:var(--cyan);margin:12px 0 6px}input,select{width:100%;padding:12px;background:#071522;color:var(--text);border:1px solid #355d88;border-radius:10px;font-size:16px}button{margin-top:16px;padding:12px 18px;border:0;border-radius:10px;background:linear-gradient(135deg,#e86f36,#f7a05f);color:white;font-weight:800;cursor:pointer}.secondary{background:#173454;border:1px solid #47719c}.danger{background:#6d2630}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:5px 9px;margin:4px;color:var(--cyan)}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px}.score{font-size:24px;font-weight:800}.note{border-left:3px solid var(--cyan);padding-left:12px}.ok{color:var(--green)}@media(max-width:900px){.grid,.stats{grid-template-columns:1fr}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif}.wrap{max-width:1450px;margin:auto;padding:24px}header{background:linear-gradient(135deg,#112743,#091524);border-bottom:1px solid var(--line)}h1{margin:0 0 8px}.muted,p{color:var(--muted)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:linear-gradient(180deg,#132944,#0c1b2f);border:1px solid var(--line);border-radius:18px;padding:20px;margin-top:18px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.stat{background:#071522;border:1px solid var(--line);border-radius:14px;padding:14px}.value{font-size:30px;font-weight:800}.eyebrow{color:var(--cyan);font-size:12px;letter-spacing:.12em;text-transform:uppercase}label{display:block;color:var(--cyan);margin:12px 0 6px}input{width:100%;padding:12px;background:#071522;color:var(--text);border:1px solid #355d88;border-radius:10px;font-size:16px}button{margin-top:16px;padding:12px 18px;border:0;border-radius:10px;background:linear-gradient(135deg,#e86f36,#f7a05f);color:white;font-weight:800;cursor:pointer}.danger{background:#6d2630}.pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:5px 9px;margin:4px;color:var(--cyan)}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px}.score{font-size:22px;font-weight:800}.note{border-left:3px solid var(--cyan);padding-left:12px}.ok{color:var(--green)}@media(max-width:950px){.grid,.stats{grid-template-columns:1fr}}
 </style></head><body>
-<header><div class="wrap"><h1>SphereBrain Semantic Encoder v2 Lab</h1><p>文章全体を一つの記号にせず、「主体・関係・内容」を再利用可能な刺激として順番にCoreへ渡す実験です。</p></div></header>
+<header><div class="wrap"><h1>SphereBrain Semantic Encoder v2 Lab</h1><p>主体・関係・内容を再利用可能な刺激として順番にCoreへ渡し、部分刺激からの再活動を観測します。</p></div></header>
 <main class="wrap">
 <section class="stats">
 <div class="stat"><div class="eyebrow">Experiences</div><div class="value">{{stats.total}}</div></div>
@@ -25,50 +25,62 @@ PAGE = r"""
 </section>
 <div class="grid">
 <section class="card"><div class="eyebrow">Structured Experience</div><h2>構造を持つ経験を入力</h2>
-<form method="post">
-<input type="hidden" name="action" value="train">
-<label>主体</label><input name="subject" value="{{subject}}" placeholder="犬" required>
-<label>関係</label><input name="relation" value="{{relation}}" placeholder="動作" required>
-<label>内容</label><input name="content" value="{{content}}" placeholder="歩く" required>
+<form method="post"><input type="hidden" name="action" value="train">
+<label>主体</label><input name="subject" value="{{subject}}" required>
+<label>関係</label><input name="relation" value="{{relation}}" required>
+<label>内容</label><input name="content" value="{{content}}" required>
 <label>反復回数</label><input type="number" min="1" max="100" name="repeats" value="{{repeats}}">
-<button>Coreへ経験を流す</button>
-</form>
-<p class="note">流れ：主体役＋犬 → 関係役＋動作 → 内容役＋歩く。各成分は別の文章でも同じ入口刺激を再利用します。</p>
+<button>Coreへ経験を流す</button></form>
+<p class="note">主体 → 関係 → 内容の順で流し、各成分は別経験でも同じ入口刺激を再利用します。</p>
 {% if trained %}<p class="ok">保存しました：{{trained.input.label}}／活動ノード {{trained.all_nodes|length}}／通過Edge {{trained.all_edges|length}}</p>{% endif %}
 </section>
-<section class="card"><div class="eyebrow">Partial Cue Recall Probe</div><h2>主体だけから活動を観測</h2>
-<form method="post">
-<input type="hidden" name="action" value="probe">
-<label>主体</label><input name="probe_subject" value="{{probe_subject}}" placeholder="犬" required>
-<label>関係</label><input name="probe_relation" value="{{probe_relation}}" placeholder="動作" required>
-<button>候補を注入せずCoreを動かす</button>
-</form>
-<p class="note">保存経路を候補としてCoreへ渡しません。Coreを動かした後、観測者が過去経験との重なりを比較します。</p>
-{% if probe %}
-<div><span class="pill">入口 {{probe.source_nodes}}</span><span class="pill">活動 {{probe.activated_nodes|length}} nodes</span><span class="pill">通過 {{probe.traversed_edges|length}} edges</span></div>
-{% if probe.matches %}<table><tr><th>過去の内容</th><th>経路重なり</th><th>経験数</th></tr>{% for item in probe.matches %}<tr><td>{{item.content}}</td><td><span class="score">{{'%.1f'|format(item.score*100)}}%</span></td><td>{{item.experiences}}</td></tr>{% endfor %}</table>{% else %}<p>この主体・関係に対応する過去経験はまだありません。</p>{% endif %}
-{% endif %}
+<section class="card"><div class="eyebrow">Partial Cue Recall</div><h2>同じ主体・関係の過去経験と比較</h2>
+<form method="post"><input type="hidden" name="action" value="probe">
+<label>主体</label><input name="probe_subject" value="{{probe_subject}}" required>
+<label>関係</label><input name="probe_relation" value="{{probe_relation}}" required>
+<button>候補を注入せずCoreを動かす</button></form>
+<p class="note">従来どおり、同じ主体・同じ関係の保存経験だけと比較します。</p>
+{% if probe %}<div><span class="pill">入口 {{probe.source_nodes}}</span><span class="pill">活動 {{probe.activated_nodes|length}} nodes</span><span class="pill">通過 {{probe.traversed_edges|length}} edges</span></div>
+{% if probe.matches %}<table><tr><th>過去の内容</th><th>経路重なり</th><th>経験数</th></tr>{% for item in probe.matches %}<tr><td>{{item.content}}</td><td><span class="score">{{'%.1f'|format(item.score*100)}}%</span></td><td>{{item.experiences}}</td></tr>{% endfor %}</table>{% else %}<p>対応する過去経験はありません。</p>{% endif %}{% endif %}
 </section></div>
-<section class="card"><div class="eyebrow">Design Boundary</div><h2>このv2で与えるもの／Coreに任せるもの</h2>
-<p><b>Encoderが与える：</b> 同じ「犬」、同じ「歩く」、同じ「動作関係」を別の経験でも再利用できる構造。</p>
-<p><b>Encoderが与えない：</b> 犬は動物、歩くは移動、犬と猫は似ている、といった答え。</p>
-<p><b>Coreに任せる：</b> 経験の重なりによる経路形成、共有、分岐、収束、部分刺激からの再活動。</p>
-<form method="post" onsubmit="return confirm('Semantic v2専用のCoreとDBを初期化します。旧brain.jsonとmemory.dbは変更しません。よろしいですか？')"><input type="hidden" name="action" value="reset"><button class="danger">Semantic v2実験だけ初期化</button></form>
+
+<div class="grid">
+<section class="card"><div class="eyebrow">Cross-subject Comparison</div><h2>主体を越えて同じ関係を比較</h2>
+<form method="post"><input type="hidden" name="action" value="cross">
+<label>刺激する主体</label><input name="cross_subject" value="{{cross_subject}}" required>
+<label>関係</label><input name="cross_relation" value="{{cross_relation}}" required>
+<button>全主体の経験と比較する</button></form>
+<p class="note">例：犬｜性質の活動を、馬・車・電車の「大きい」や猫・自転車の「小さい」と横断比較します。Coreへ候補は渡しません。</p>
+{% if cross %}<div><span class="pill">入口 {{cross.source_nodes}}</span><span class="pill">活動 {{cross.activated_nodes|length}} nodes</span><span class="pill">通過 {{cross.traversed_edges|length}} edges</span></div>
+{% if cross.matches %}<table><tr><th>主体</th><th>内容</th><th>重なり</th><th>経験数</th></tr>{% for item in cross.matches %}<tr><td>{{item.subject}}</td><td>{{item.content}}</td><td><span class="score">{{'%.1f'|format(item.score*100)}}%</span></td><td>{{item.experiences}}</td></tr>{% endfor %}</table>{% endif %}{% endif %}
 </section>
+<section class="card"><div class="eyebrow">Subject-only Recall</div><h2>主体だけから全関係方向を観測</h2>
+<form method="post"><input type="hidden" name="action" value="subject_only">
+<label>主体</label><input name="only_subject" value="{{only_subject}}" required>
+<button>主体だけでCoreを動かす</button></form>
+<p class="note">関係を指定せず、「犬」だけの刺激が動作・状態・種類・性質のどの経験方向と重なるかを比較します。</p>
+{% if subject_only %}<div><span class="pill">入口 {{subject_only.source_nodes}}</span><span class="pill">活動 {{subject_only.activated_nodes|length}} nodes</span><span class="pill">通過 {{subject_only.traversed_edges|length}} edges</span></div>
+{% if subject_only.matches %}<table><tr><th>関係</th><th>内容</th><th>重なり</th><th>経験数</th></tr>{% for item in subject_only.matches %}<tr><td>{{item.relation}}</td><td>{{item.content}}</td><td><span class="score">{{'%.1f'|format(item.score*100)}}%</span></td><td>{{item.experiences}}</td></tr>{% endfor %}</table>{% endif %}{% endif %}
+</section></div>
+
+<section class="card"><div class="eyebrow">Design Boundary</div><h2>今回追加した観測</h2>
+<p><b>主体横断：</b> 同じ関係に属する全主体の実経路と比較し、共有内容の経路が主体を越えて近づいたかを見る。</p>
+<p><b>主体単独：</b> 関係を人間が指定せず、主体刺激だけで複数の関係枝のどこへ近づくかを見る。</p>
+<p>どちらも観測時は学習せず、保存経路をCoreへ候補として注入しません。</p>
+<form method="post" onsubmit="return confirm('Semantic v2専用のCoreとDBを初期化します。旧データは変更しません。よろしいですか？')"><input type="hidden" name="action" value="reset"><button class="danger">Semantic v2実験だけ初期化</button></form>
+</section>
+{% if error %}<section class="card"><p>{{error}}</p></section>{% endif %}
 </main></body></html>
 """
 
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    subject = "犬"
-    relation = "動作"
-    content = "歩く"
-    repeats = 1
-    probe_subject = "犬"
-    probe_relation = "動作"
-    trained = None
-    probe = None
+    subject, relation, content, repeats = "犬", "動作", "歩く", 1
+    probe_subject, probe_relation = "犬", "動作"
+    cross_subject, cross_relation = "犬", "性質"
+    only_subject = "犬"
+    trained = probe = cross = subject_only = None
     error = ""
 
     if request.method == "POST":
@@ -84,16 +96,24 @@ def index():
                 probe_subject = request.form.get("probe_subject", "")
                 probe_relation = request.form.get("probe_relation", "")
                 probe = semantic.recall_probe(probe_subject, probe_relation)
+            elif action == "cross":
+                cross_subject = request.form.get("cross_subject", "")
+                cross_relation = request.form.get("cross_relation", "")
+                cross = semantic.cross_subject_probe(cross_subject, cross_relation)
+            elif action == "subject_only":
+                only_subject = request.form.get("only_subject", "")
+                subject_only = semantic.subject_only_probe(only_subject)
             elif action == "reset":
                 semantic.reset_experiment()
         except Exception as exc:
             error = str(exc)
 
     return render_template_string(
-        PAGE,
-        stats=semantic.stats(), subject=subject, relation=relation, content=content,
-        repeats=repeats, trained=trained, probe=probe,
-        probe_subject=probe_subject, probe_relation=probe_relation, error=error,
+        PAGE, stats=semantic.stats(), subject=subject, relation=relation, content=content,
+        repeats=repeats, trained=trained, probe=probe, probe_subject=probe_subject,
+        probe_relation=probe_relation, cross=cross, cross_subject=cross_subject,
+        cross_relation=cross_relation, subject_only=subject_only, only_subject=only_subject,
+        error=error,
     )
 
 
