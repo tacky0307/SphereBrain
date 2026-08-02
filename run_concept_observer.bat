@@ -1,4 +1,4 @@
 @echo off
 cd /d %~dp0
-python concept_observer.py
+python structural_observer_v2.py
 pause
