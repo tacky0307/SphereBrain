@@ -107,11 +107,6 @@ def reset_experiment() -> None:
 
 
 def component_nodes(brain: SphereBrain, namespace: str, value: str, count: int = 3) -> list[int]:
-    """Create stable reusable entry nodes for one semantic component.
-
-    Hashing is used only to assign a stable address. Meaning comes from reusing
-    the same subject/relation/content component across different experiences.
-    """
     material = f"semantic-v2|{namespace}|{value.strip()}".encode("utf-8")
     digest = hashlib.sha256(material).digest()
     nodes: list[int] = []
@@ -213,12 +208,30 @@ def jaccard(left: Iterable, right: Iterable) -> float:
     return len(a & b) / len(union) if union else 0.0
 
 
-def recall_probe(subject: str, relation: str = "動作", limit: int = 8) -> dict:
-    """Run the Core without candidate injection, then compare the activity afterward.
+def _score_probe_against_rows(probe_nodes: set[int], probe_edges: set[tuple[int, int]], rows: list[sqlite3.Row], *, group_fields: tuple[str, ...]) -> list[dict]:
+    grouped: dict[tuple[str, ...], list[sqlite3.Row]] = {}
+    for row in rows:
+        key = tuple(str(row[field]) for field in group_fields)
+        grouped.setdefault(key, []).append(row)
 
-    Stored experiences are used only by the observer after propagation. They are
-    never supplied to Core as choices or candidate routes.
-    """
+    results: list[dict] = []
+    for key, items in grouped.items():
+        node_scores: list[float] = []
+        edge_scores: list[float] = []
+        for row in items:
+            stored_nodes = json.loads(row["all_nodes"])
+            stored_edges = [tuple(v) for v in json.loads(row["all_edges"])]
+            node_scores.append(jaccard(probe_nodes, stored_nodes))
+            edge_scores.append(jaccard(probe_edges, stored_edges))
+        score = 0.42 * max(node_scores, default=0.0) + 0.58 * max(edge_scores, default=0.0)
+        item = {field: value for field, value in zip(group_fields, key)}
+        item.update({"score": score, "experiences": len(items)})
+        results.append(item)
+    results.sort(key=lambda x: (-x["score"], -x["experiences"], tuple(x[field] for field in group_fields)))
+    return results
+
+
+def recall_probe(subject: str, relation: str = "動作", limit: int = 8) -> dict:
     brain = load_brain()
     cue = StructuredInput(subject.strip(), relation.strip(), "__cue__")
 
@@ -244,29 +257,76 @@ def recall_probe(subject: str, relation: str = "動作", limit: int = 8) -> dict
             (cue.subject, cue.relation),
         ).fetchall()
 
-    grouped: dict[str, list[sqlite3.Row]] = {}
-    for row in rows:
-        grouped.setdefault(row["content"], []).append(row)
-
-    results = []
-    for content, items in grouped.items():
-        node_scores = []
-        edge_scores = []
-        for row in items:
-            stored_nodes = json.loads(row["all_nodes"])
-            stored_edges = [tuple(v) for v in json.loads(row["all_edges"])]
-            node_scores.append(jaccard(probe_nodes, stored_nodes))
-            edge_scores.append(jaccard(probe_edges, stored_edges))
-        score = 0.42 * max(node_scores, default=0.0) + 0.58 * max(edge_scores, default=0.0)
-        results.append({"content": content, "score": score, "experiences": len(items)})
-    results.sort(key=lambda x: (-x["score"], -x["experiences"], x["content"]))
-
+    results = _score_probe_against_rows(probe_nodes, probe_edges, list(rows), group_fields=("content",))
     return {
         "subject": cue.subject,
         "relation": cue.relation,
         "source_nodes": subject_result.source_nodes,
         "activated_nodes": sorted(probe_nodes),
         "traversed_edges": sorted(probe_edges),
+        "matches": results[: max(1, int(limit))],
+    }
+
+
+def cross_subject_probe(subject: str, relation: str, limit: int = 20) -> dict:
+    """Compare one subject+relation activity against all subjects sharing that relation."""
+    brain = load_brain()
+    subject = subject.strip()
+    relation = relation.strip()
+    subject_sources = component_nodes(brain, "role:subject", "subject", 2) + component_nodes(brain, "entity", subject, 3)
+    subject_result = brain.propagate(subject_sources, steps=8, threshold=0.18, noise=0.0, learn=False)
+    relation_sources = component_nodes(brain, "role:relation", "relation", 2) + component_nodes(brain, "relation", relation, 3)
+    relation_result = brain.propagate(
+        relation_sources,
+        steps=10,
+        threshold=0.18,
+        noise=0.0,
+        learn=False,
+        context_nodes=_context_tail(subject_result),
+    )
+    probe_nodes = set(subject_result.activated_nodes) | set(relation_result.activated_nodes)
+    probe_edges = set(subject_result.traversed_edges) | set(relation_result.traversed_edges)
+
+    initialize_db()
+    with sqlite3.connect(DB_FILE, timeout=30) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM semantic_experiences WHERE relation=? ORDER BY id DESC",
+            (relation,),
+        ).fetchall()
+    results = _score_probe_against_rows(probe_nodes, probe_edges, list(rows), group_fields=("subject", "content"))
+    return {
+        "subject": subject,
+        "relation": relation,
+        "source_nodes": subject_result.source_nodes,
+        "activated_nodes": sorted(probe_nodes),
+        "traversed_edges": sorted(probe_edges),
+        "matches": results[: max(1, int(limit))],
+    }
+
+
+def subject_only_probe(subject: str, limit: int = 24) -> dict:
+    """Stimulate only the subject and compare the activity against all its relation branches."""
+    brain = load_brain()
+    subject = subject.strip()
+    sources = component_nodes(brain, "role:subject", "subject", 2) + component_nodes(brain, "entity", subject, 3)
+    result = brain.propagate(sources, steps=12, threshold=0.18, noise=0.0, learn=False)
+    probe_nodes = set(result.activated_nodes)
+    probe_edges = set(result.traversed_edges)
+
+    initialize_db()
+    with sqlite3.connect(DB_FILE, timeout=30) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM semantic_experiences WHERE subject=? ORDER BY id DESC",
+            (subject,),
+        ).fetchall()
+    results = _score_probe_against_rows(probe_nodes, probe_edges, list(rows), group_fields=("relation", "content"))
+    return {
+        "subject": subject,
+        "source_nodes": result.source_nodes,
+        "activated_nodes": result.activated_nodes,
+        "traversed_edges": result.traversed_edges,
         "matches": results[: max(1, int(limit))],
     }
 
