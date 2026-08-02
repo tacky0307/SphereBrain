@@ -234,100 +234,125 @@ def _score_probe_against_rows(probe_nodes: set[int], probe_edges: set[tuple[int,
 def recall_probe(subject: str, relation: str = "動作", limit: int = 8) -> dict:
     brain = load_brain()
     cue = StructuredInput(subject.strip(), relation.strip(), "__cue__")
-
     subject_sources = component_nodes(brain, "role:subject", "subject", 2) + component_nodes(brain, "entity", cue.subject, 3)
     subject_result = brain.propagate(subject_sources, steps=8, threshold=0.18, noise=0.0, learn=False)
     relation_sources = component_nodes(brain, "role:relation", "relation", 2) + component_nodes(brain, "relation", cue.relation, 3)
-    relation_result = brain.propagate(
-        relation_sources,
-        steps=10,
-        threshold=0.18,
-        noise=0.0,
-        learn=False,
-        context_nodes=_context_tail(subject_result),
-    )
+    relation_result = brain.propagate(relation_sources, steps=10, threshold=0.18, noise=0.0, learn=False, context_nodes=_context_tail(subject_result))
     probe_nodes = set(subject_result.activated_nodes) | set(relation_result.activated_nodes)
     probe_edges = set(subject_result.traversed_edges) | set(relation_result.traversed_edges)
-
     initialize_db()
     with sqlite3.connect(DB_FILE, timeout=30) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM semantic_experiences WHERE subject=? AND relation=? ORDER BY id DESC",
-            (cue.subject, cue.relation),
-        ).fetchall()
-
+        rows = conn.execute("SELECT * FROM semantic_experiences WHERE subject=? AND relation=? ORDER BY id DESC", (cue.subject, cue.relation)).fetchall()
     results = _score_probe_against_rows(probe_nodes, probe_edges, list(rows), group_fields=("content",))
-    return {
-        "subject": cue.subject,
-        "relation": cue.relation,
-        "source_nodes": subject_result.source_nodes,
-        "activated_nodes": sorted(probe_nodes),
-        "traversed_edges": sorted(probe_edges),
-        "matches": results[: max(1, int(limit))],
-    }
+    return {"subject": cue.subject, "relation": cue.relation, "source_nodes": subject_result.source_nodes, "activated_nodes": sorted(probe_nodes), "traversed_edges": sorted(probe_edges), "matches": results[: max(1, int(limit))]}
 
 
 def cross_subject_probe(subject: str, relation: str, limit: int = 20) -> dict:
-    """Compare one subject+relation activity against all subjects sharing that relation."""
     brain = load_brain()
     subject = subject.strip()
     relation = relation.strip()
     subject_sources = component_nodes(brain, "role:subject", "subject", 2) + component_nodes(brain, "entity", subject, 3)
     subject_result = brain.propagate(subject_sources, steps=8, threshold=0.18, noise=0.0, learn=False)
     relation_sources = component_nodes(brain, "role:relation", "relation", 2) + component_nodes(brain, "relation", relation, 3)
-    relation_result = brain.propagate(
-        relation_sources,
-        steps=10,
-        threshold=0.18,
-        noise=0.0,
-        learn=False,
-        context_nodes=_context_tail(subject_result),
-    )
+    relation_result = brain.propagate(relation_sources, steps=10, threshold=0.18, noise=0.0, learn=False, context_nodes=_context_tail(subject_result))
     probe_nodes = set(subject_result.activated_nodes) | set(relation_result.activated_nodes)
     probe_edges = set(subject_result.traversed_edges) | set(relation_result.traversed_edges)
-
     initialize_db()
     with sqlite3.connect(DB_FILE, timeout=30) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM semantic_experiences WHERE relation=? ORDER BY id DESC",
-            (relation,),
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM semantic_experiences WHERE relation=? ORDER BY id DESC", (relation,)).fetchall()
     results = _score_probe_against_rows(probe_nodes, probe_edges, list(rows), group_fields=("subject", "content"))
-    return {
-        "subject": subject,
-        "relation": relation,
-        "source_nodes": subject_result.source_nodes,
-        "activated_nodes": sorted(probe_nodes),
-        "traversed_edges": sorted(probe_edges),
-        "matches": results[: max(1, int(limit))],
-    }
+    return {"subject": subject, "relation": relation, "source_nodes": subject_result.source_nodes, "activated_nodes": sorted(probe_nodes), "traversed_edges": sorted(probe_edges), "matches": results[: max(1, int(limit))]}
 
 
 def subject_only_probe(subject: str, limit: int = 24) -> dict:
-    """Stimulate only the subject and compare the activity against all its relation branches."""
     brain = load_brain()
     subject = subject.strip()
     sources = component_nodes(brain, "role:subject", "subject", 2) + component_nodes(brain, "entity", subject, 3)
     result = brain.propagate(sources, steps=12, threshold=0.18, noise=0.0, learn=False)
     probe_nodes = set(result.activated_nodes)
     probe_edges = set(result.traversed_edges)
-
     initialize_db()
     with sqlite3.connect(DB_FILE, timeout=30) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM semantic_experiences WHERE subject=? ORDER BY id DESC",
-            (subject,),
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM semantic_experiences WHERE subject=? ORDER BY id DESC", (subject,)).fetchall()
     results = _score_probe_against_rows(probe_nodes, probe_edges, list(rows), group_fields=("relation", "content"))
+    return {"subject": subject, "source_nodes": result.source_nodes, "activated_nodes": result.activated_nodes, "traversed_edges": result.traversed_edges, "matches": results[: max(1, int(limit))]}
+
+
+def _row_content_signature(row: sqlite3.Row) -> tuple[set[int], set[tuple[int, int]]]:
+    return (
+        {int(v) for v in json.loads(row["content_nodes"])},
+        {tuple(int(x) for x in edge) for edge in json.loads(row["content_edges"])},
+    )
+
+
+def _content_pair_score(left: list[sqlite3.Row], right: list[sqlite3.Row]) -> float:
+    scores: list[float] = []
+    for left_row in left:
+        left_nodes, left_edges = _row_content_signature(left_row)
+        for right_row in right:
+            right_nodes, right_edges = _row_content_signature(right_row)
+            scores.append(0.42 * jaccard(left_nodes, right_nodes) + 0.58 * jaccard(left_edges, right_edges))
+    return sum(scores) / len(scores) if scores else 0.0
+
+
+def content_phase_analysis(relation: str, limit: int = 40) -> dict:
+    """Compare only the content-stage activity, excluding subject/relation paths.
+
+    The result tests whether identical contents across different subjects are
+    structurally closer than different contents under the same relation.
+    """
+    relation = relation.strip()
+    if not relation:
+        raise ValueError("関係を入力してください。")
+    initialize_db()
+    with sqlite3.connect(DB_FILE, timeout=30) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = list(conn.execute("SELECT * FROM semantic_experiences WHERE relation=? ORDER BY id", (relation,)).fetchall())
+
+    groups: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        groups.setdefault((str(row["subject"]), str(row["content"])), []).append(row)
+
+    pairs: list[dict] = []
+    keys = sorted(groups)
+    same_scores: list[float] = []
+    different_scores: list[float] = []
+    for index, left_key in enumerate(keys):
+        for right_key in keys[index + 1:]:
+            left_subject, left_content = left_key
+            right_subject, right_content = right_key
+            score = _content_pair_score(groups[left_key], groups[right_key])
+            same_content = left_content == right_content and left_subject != right_subject
+            if same_content:
+                same_scores.append(score)
+            else:
+                different_scores.append(score)
+            pairs.append({
+                "left_subject": left_subject,
+                "left_content": left_content,
+                "right_subject": right_subject,
+                "right_content": right_content,
+                "score": score,
+                "same_content": same_content,
+                "left_experiences": len(groups[left_key]),
+                "right_experiences": len(groups[right_key]),
+            })
+
+    pairs.sort(key=lambda item: (not item["same_content"], -item["score"], item["left_subject"], item["right_subject"]))
+    same_average = sum(same_scores) / len(same_scores) if same_scores else 0.0
+    different_average = sum(different_scores) / len(different_scores) if different_scores else 0.0
     return {
-        "subject": subject,
-        "source_nodes": result.source_nodes,
-        "activated_nodes": result.activated_nodes,
-        "traversed_edges": result.traversed_edges,
-        "matches": results[: max(1, int(limit))],
+        "relation": relation,
+        "group_count": len(groups),
+        "same_pair_count": len(same_scores),
+        "different_pair_count": len(different_scores),
+        "same_average": same_average,
+        "different_average": different_average,
+        "separation": same_average - different_average,
+        "pairs": pairs[: max(1, int(limit))],
     }
 
 
