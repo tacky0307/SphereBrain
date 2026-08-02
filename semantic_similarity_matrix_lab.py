@@ -55,8 +55,8 @@ TEMPLATE = r'''<!doctype html>
 <section class="card">
 <h2>分類別平均</h2>
 <table><tr><th>共通要素</th><th>組数</th><th>旧v2</th><th>v2.1</th><th>差</th></tr>
-{% for summary in result.summaries %}
-<tr><td>{{ summary.kind }}</td><td>{{ summary.count }}</td><td>{{ '%.1f'|format(summary.old * 100) }}%</td><td class="cell">{{ '%.1f'|format(summary.new * 100) }}%</td><td>{{ '%.1f'|format((summary.new-summary.old) * 100) }}pt</td></tr>
+{% for summary in result['summaries'] %}
+<tr><td>{{ summary['kind'] }}</td><td>{{ summary['count'] }}</td><td>{{ '%.1f'|format(summary['old'] * 100) }}%</td><td class="cell">{{ '%.1f'|format(summary['new'] * 100) }}%</td><td>{{ '%.1f'|format((summary['new']-summary['old']) * 100) }}pt</td></tr>
 {% endfor %}
 </table>
 <p>共有する構成要素が多い組ほど高く、共通要素なしが低くなるかを確認します。</p>
@@ -64,23 +64,23 @@ TEMPLATE = r'''<!doctype html>
 
 <div class="two">
 <section class="card"><h2>旧 Semantic Encoder v2</h2><div class="scroll"><table>
-<tr><th></th>{% for item in result.items %}<th title="{{ item.label }}">{{ loop.index }}</th>{% endfor %}</tr>
-{% for matrix_row in result.old_matrix %}
-<tr><th class="sticky">{{ loop.index }} {{ result.items[loop.index0].label }}</th>{% for value in matrix_row %}<td class="cell" style="background:rgba(85,205,255,{{ '%.3f'|format(value * 0.55) }})">{{ '%.0f'|format(value * 100) }}</td>{% endfor %}</tr>
+<tr><th></th>{% for item in result['items'] %}<th title="{{ item['label'] }}">{{ loop.index }}</th>{% endfor %}</tr>
+{% for matrix_row in result['old_matrix'] %}
+<tr><th class="sticky">{{ loop.index }} {{ result['items'][loop.index0]['label'] }}</th>{% for value in matrix_row %}<td class="cell" style="background:rgba(85,205,255,{{ '%.3f'|format(value * 0.55) }})">{{ '%.0f'|format(value * 100) }}</td>{% endfor %}</tr>
 {% endfor %}
 </table></div></section>
 
 <section class="card"><h2>Semantic Encoder v2.1 Contextual</h2><div class="scroll"><table>
-<tr><th></th>{% for item in result.items %}<th title="{{ item.label }}">{{ loop.index }}</th>{% endfor %}</tr>
-{% for matrix_row in result.new_matrix %}
-<tr><th class="sticky">{{ loop.index }} {{ result.items[loop.index0].label }}</th>{% for value in matrix_row %}<td class="cell" style="background:rgba(85,205,255,{{ '%.3f'|format(value * 0.55) }})">{{ '%.0f'|format(value * 100) }}</td>{% endfor %}</tr>
+<tr><th></th>{% for item in result['items'] %}<th title="{{ item['label'] }}">{{ loop.index }}</th>{% endfor %}</tr>
+{% for matrix_row in result['new_matrix'] %}
+<tr><th class="sticky">{{ loop.index }} {{ result['items'][loop.index0]['label'] }}</th>{% for value in matrix_row %}<td class="cell" style="background:rgba(85,205,255,{{ '%.3f'|format(value * 0.55) }})">{{ '%.0f'|format(value * 100) }}</td>{% endfor %}</tr>
 {% endfor %}
 </table></div></section>
 </div>
 
 <section class="card"><h2>v2.1で距離が近い組・遠い組</h2><table>
 <tr><th>分類</th><th>入力A</th><th>入力B</th><th>旧v2</th><th>v2.1</th></tr>
-{% for pair in result.pairs %}<tr><td>{{ pair.kind }}</td><td>{{ pair.left }}</td><td>{{ pair.right }}</td><td>{{ '%.1f'|format(pair.old * 100) }}%</td><td class="cell">{{ '%.1f'|format(pair.new * 100) }}%</td></tr>{% endfor %}
+{% for pair in result['pairs'] %}<tr><td>{{ pair['kind'] }}</td><td>{{ pair['left'] }}</td><td>{{ pair['right'] }}</td><td>{{ '%.1f'|format(pair['old'] * 100) }}%</td><td class="cell">{{ '%.1f'|format(pair['new'] * 100) }}%</td></tr>{% endfor %}
 </table></section>
 {% endif %}
 </main>
