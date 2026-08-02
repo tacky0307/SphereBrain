@@ -18,11 +18,17 @@ from semantic_encoder_v2 import (
 )
 
 
+OUTPUT_MODES = {"fixed", "adaptive", "reignite"}
+
+
 @dataclass
 class RawOutput:
     subject: str
     relation: str
+    mode: str
     source_nodes: list[int]
+    initial_peak: float
+    effective_threshold: float
     final_node: int | None
     final_value: float
     active_nodes: list[tuple[int, float]]
@@ -44,6 +50,31 @@ def _top_active(activation: np.ndarray, limit: int = 16) -> list[tuple[int, floa
     return ranked[: max(1, int(limit))]
 
 
+def _prepare_output_state(
+    initial_activation: np.ndarray,
+    *,
+    mode: str,
+    threshold: float,
+    adaptive_ratio: float,
+) -> tuple[np.ndarray, float, float]:
+    activation = np.asarray(initial_activation, dtype=float).copy()
+    initial_peak = float(np.max(activation)) if activation.size else 0.0
+
+    if mode not in OUTPUT_MODES:
+        raise ValueError(f"未対応の出力モードです: {mode}")
+
+    if mode == "reignite" and initial_peak > 0:
+        activation /= initial_peak
+        effective_threshold = float(threshold)
+    elif mode == "adaptive":
+        # 残留活性の形を変えず、現在の信号強度に合わせて観測閾値だけを下げる。
+        effective_threshold = max(0.001, initial_peak * float(adaptive_ratio))
+    else:
+        effective_threshold = float(threshold)
+
+    return activation, initial_peak, effective_threshold
+
+
 def _continue_focused(
     brain,
     initial_activation: np.ndarray,
@@ -51,11 +82,7 @@ def _continue_focused(
     steps: int = 24,
     threshold: float = 0.18,
 ) -> tuple[np.ndarray, list[list[int]], list[tuple[int, int]], str]:
-    """Continue Core activity from a prior numeric state without learning.
-
-    This intentionally mirrors the current focused propagation rule, but starts
-    from relation_result.final_activation instead of injecting a new semantic cue.
-    """
+    """Continue Core activity from a prior numeric state without learning."""
     activation = np.asarray(initial_activation, dtype=float).copy()
     history: list[list[int]] = [np.flatnonzero(activation > 0).astype(int).tolist()]
     traversed_edges: set[tuple[int, int]] = set()
@@ -187,6 +214,8 @@ def observe_once(
     *,
     output_steps: int = 24,
     threshold: float = 0.18,
+    mode: str = "adaptive",
+    adaptive_ratio: float = 0.35,
     top_nodes: int = 16,
     save: bool = True,
 ) -> dict:
@@ -221,11 +250,17 @@ def observe_once(
         context_nodes=_context_tail(subject_result),
     )
 
+    prepared, initial_peak, effective_threshold = _prepare_output_state(
+        relation_result.final_activation,
+        mode=mode,
+        threshold=threshold,
+        adaptive_ratio=adaptive_ratio,
+    )
     final_activation, free_history, free_edges, stopped_reason = _continue_focused(
         brain,
-        relation_result.final_activation,
+        prepared,
         steps=output_steps,
-        threshold=threshold,
+        threshold=effective_threshold,
     )
     active_nodes = _top_active(final_activation, top_nodes)
     final_node = active_nodes[0][0] if active_nodes else None
@@ -234,7 +269,10 @@ def observe_once(
     raw = RawOutput(
         subject=subject,
         relation=relation,
+        mode=mode,
         source_nodes=relation_result.source_nodes,
+        initial_peak=initial_peak,
+        effective_threshold=effective_threshold,
         final_node=final_node,
         final_value=final_value,
         active_nodes=active_nodes,
@@ -286,6 +324,8 @@ def observe_repeated(
     repeats: int = 5,
     output_steps: int = 24,
     threshold: float = 0.18,
+    mode: str = "adaptive",
+    adaptive_ratio: float = 0.35,
 ) -> dict:
     runs = [
         observe_once(
@@ -293,6 +333,8 @@ def observe_repeated(
             relation,
             output_steps=output_steps,
             threshold=threshold,
+            mode=mode,
+            adaptive_ratio=adaptive_ratio,
             save=True,
         )
         for _ in range(max(1, int(repeats)))
@@ -311,6 +353,7 @@ def observe_repeated(
     return {
         "subject": subject.strip(),
         "relation": relation.strip(),
+        "mode": mode,
         "runs": runs,
         "repeat_count": len(runs),
         "mean_similarity": sum(pair_scores) / len(pair_scores) if pair_scores else 1.0,
