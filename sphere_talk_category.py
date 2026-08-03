@@ -28,10 +28,9 @@ KNOWN_CLASSIFICATIONS = {
     "草": "植物",
 }
 
-# 未経験主体。既知概念へ似ていても断定せず、不明を返すために残す。
-UNKNOWN_SUBJECTS = ["カエル", "ロボット", "雲"]
-SUBJECTS = list(KNOWN_CLASSIFICATIONS) + UNKNOWN_SUBJECTS
-ANSWERS = ["一致", "不一致", "不明"]
+# この説明用Labでは、経験済みの主体だけを質問候補にする。
+SUBJECTS = list(KNOWN_CLASSIFICATIONS)
+ANSWERS = ["一致", "不一致"]
 
 # 各既知主体について、正しい分類を1件、誤分類を同数だけ教育する。
 # これにより一致・不一致の経験数を完全に対称化する。
@@ -81,19 +80,16 @@ class SphereTalkCategoryBrain:
     def verbalize(answer: str, subject: str, category: str) -> str:
         if answer == "一致":
             return f"はい。{subject}は{category}です。"
-        if answer == "不一致":
-            return f"いいえ。{subject}は{category}ではありません。"
-        return f"{subject}が{category}かどうかは、まだ分かりません。"
+        return f"いいえ。{subject}は{category}ではありません。"
 
     def answer(self, subject: str, category: str) -> dict:
         if subject not in SUBJECTS or category not in CATEGORIES:
-            raise ValueError("主体または分類を選び直してください。")
+            raise ValueError("このLabでは、経験済みの主体と分類だけを選んでください。")
 
         current = self._run(subject, category, learn=False)
         current_nodes = set(current.activated_nodes)
         current_edges = {tuple(sorted(edge)) for edge in current.traversed_edges}
 
-        trained_subject = subject in KNOWN_CLASSIFICATIONS
         exact = [
             item
             for item in self.experiences
@@ -129,12 +125,6 @@ class SphereTalkCategoryBrain:
                     "matches": len(current_edges & prototype_edges),
                 }
 
-        # 未経験主体は、既知の似た経路だけで分類しない。
-        if not trained_subject:
-            answer_scores["不明"] = max(answer_scores.values(), default=0.0) + 0.25
-        elif not exact:
-            answer_scores["不明"] = max(answer_scores.values(), default=0.0) + 0.10
-
         maximum = max(answer_scores.values(), default=1.0) or 1.0
         candidates = [
             {
@@ -146,7 +136,7 @@ class SphereTalkCategoryBrain:
             for answer in ANSWERS
         ]
         candidates.sort(key=lambda item: (-item["score"], item["answer"]))
-        selected = candidates[0]["answer"] if candidates else "不明"
+        selected = candidates[0]["answer"]
 
         return {
             "subject": subject,
@@ -154,7 +144,7 @@ class SphereTalkCategoryBrain:
             "question": f"{subject}は{category}ですか？",
             "selected_answer": selected,
             "speech": self.verbalize(selected, subject, category),
-            "trained_subject": trained_subject,
+            "trained_subject": True,
             "trained_pair": bool(exact),
             "facts": [
                 f"質問主体｜対象｜{subject}",
@@ -165,5 +155,5 @@ class SphereTalkCategoryBrain:
             "candidates": candidates,
             "raw_nodes": len(current_nodes),
             "raw_edges": len(current_edges),
-            "decoder": "Category Route Decoder — Four Categories",
+            "decoder": "Category Route Decoder — Experienced Subjects Only",
         }
