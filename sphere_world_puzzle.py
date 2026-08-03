@@ -56,9 +56,12 @@ class PuzzleWorld:
         self.goal = (0, 0)
         for r, row in enumerate(rows):
             for c, value in enumerate(row):
-                if value == "#": self.walls.add((r, c))
-                elif value == "P": self.player = (r, c)
-                elif value == "G": self.goal = (r, c)
+                if value == "#":
+                    self.walls.add((r, c))
+                elif value == "P":
+                    self.player = (r, c)
+                elif value == "G":
+                    self.goal = (r, c)
         self.turn = 0
         self.history: list[dict] = []
 
@@ -70,11 +73,17 @@ class PuzzleWorld:
         dr, dc = DELTAS[action]
         r, c = self.player
         target = (r + dr, c + dc)
-        return 0 <= target[0] < self.rows and 0 <= target[1] < self.cols and target not in self.walls
+        return (
+            0 <= target[0] < self.rows
+            and 0 <= target[1] < self.cols
+            and target not in self.walls
+        )
 
     def move(self, action: str) -> bool:
-        if action == "停止": return self.solved
-        if not self.can_move(action): return False
+        if action == "停止":
+            return self.solved
+        if not self.can_move(action):
+            return False
         dr, dc = DELTAS[action]
         self.player = (self.player[0] + dr, self.player[1] + dc)
         self.turn += 1
@@ -82,16 +91,23 @@ class PuzzleWorld:
 
     def to_dict(self) -> dict:
         return {
-            "key": self.key, "name": self.name, "rows": self.rows, "cols": self.cols,
-            "player": list(self.player), "goal": list(self.goal),
+            "key": self.key,
+            "name": self.name,
+            "rows": self.rows,
+            "cols": self.cols,
+            "player": list(self.player),
+            "goal": list(self.goal),
             "walls": [list(item) for item in sorted(self.walls)],
-            "turn": self.turn, "solved": self.solved,
+            "turn": self.turn,
+            "solved": self.solved,
         }
 
 
 def _direction_label(delta: int, negative: str, positive: str) -> str:
-    if delta < 0: return negative
-    if delta > 0: return positive
+    if delta < 0:
+        return negative
+    if delta > 0:
+        return positive
     return "同じ"
 
 
@@ -104,25 +120,40 @@ def facts_for_world(world: PuzzleWorld) -> list[Fact]:
         Fact("Goal", "上下関係", _direction_label(gr - pr, "上", "下")),
         Fact("Goal", "左右関係", _direction_label(gc - pc, "左", "右")),
     ]
-    for action, relation in [("上へ移動", "上"), ("下へ移動", "下"), ("左へ移動", "左"), ("右へ移動", "右")]:
-        facts.append(Fact("Player", f"{relation}方向", "移動可能" if world.can_move(action) else "障害物"))
+    for action, relation in [
+        ("上へ移動", "上"),
+        ("下へ移動", "下"),
+        ("左へ移動", "左"),
+        ("右へ移動", "右"),
+    ]:
+        facts.append(
+            Fact(
+                "Player",
+                f"{relation}方向",
+                "移動可能" if world.can_move(action) else "障害物",
+            )
+        )
     facts.append(Fact("Player", "Goal接触", "している" if world.solved else "していない"))
     return facts
 
 
 def shortest_action(world: PuzzleWorld) -> str:
-    if world.solved: return "停止"
+    if world.solved:
+        return "停止"
     queue = deque([(world.player, [])])
     visited = {world.player}
     order = ["右へ移動", "下へ移動", "左へ移動", "上へ移動"]
     while queue:
         position, path = queue.popleft()
-        if position == world.goal: return path[0] if path else "停止"
+        if position == world.goal:
+            return path[0] if path else "停止"
         for action in order:
             dr, dc = DELTAS[action]
             nxt = (position[0] + dr, position[1] + dc)
-            if not (0 <= nxt[0] < world.rows and 0 <= nxt[1] < world.cols): continue
-            if nxt in world.walls or nxt in visited: continue
+            if not (0 <= nxt[0] < world.rows and 0 <= nxt[1] < world.cols):
+                continue
+            if nxt in world.walls or nxt in visited:
+                continue
             visited.add(nxt)
             queue.append((nxt, path + [action]))
     return "停止"
@@ -143,6 +174,7 @@ class PuzzleSphereBrain:
         self.brain = load_contextual_brain()
         self.repeats = max(1, int(repeats))
         self.prototypes: dict[str, list] = {action: [] for action in ACTIONS}
+        self.distinctive_edges: dict[str, set[tuple[int, int]]] = {action: set() for action in ACTIONS}
         self.training_examples: list[dict] = []
         self._train()
 
@@ -156,16 +188,42 @@ class PuzzleSphereBrain:
 
     def _continue(self, context: dict[int, float], action: str | None, *, learn: bool):
         noise = 0.004 if learn else 0.0
-        relation_sources = component_nodes(self.brain, "role:relation", "relation", 2) + component_nodes(self.brain, "relation", "次行動", 3)
-        relation_result = self.brain.propagate_contextual(
-            relation_sources, context, steps=8, threshold=0.18, noise=noise, learn=learn
+        relation_sources = (
+            component_nodes(self.brain, "role:relation", "relation", 2)
+            + component_nodes(self.brain, "relation", "次行動", 3)
         )
-        decision_context = merge_contexts((context, 0.78), (result_to_context(relation_result), 1.0))
+        relation_result = self.brain.propagate_contextual(
+            relation_sources,
+            context,
+            steps=8,
+            threshold=0.18,
+            noise=noise,
+            learn=learn,
+        )
+        decision_context = merge_contexts(
+            (context, 0.78),
+            (result_to_context(relation_result), 1.0),
+        )
         if action is None:
-            return self.brain.propagate_contextual([], decision_context, steps=10, threshold=0.18, noise=0.0, learn=False)
-        content_sources = component_nodes(self.brain, "role:content", "content", 2) + component_nodes(self.brain, "content", action, 3)
+            return self.brain.propagate_contextual(
+                [],
+                decision_context,
+                steps=10,
+                threshold=0.18,
+                noise=0.0,
+                learn=False,
+            )
+        content_sources = (
+            component_nodes(self.brain, "role:content", "content", 2)
+            + component_nodes(self.brain, "content", action, 3)
+        )
         return self.brain.propagate_contextual(
-            content_sources, decision_context, steps=10, threshold=0.18, noise=noise, learn=learn
+            content_sources,
+            decision_context,
+            steps=10,
+            threshold=0.18,
+            noise=noise,
+            learn=learn,
         )
 
     def _training_worlds(self) -> list[PuzzleWorld]:
@@ -190,54 +248,110 @@ class PuzzleSphereBrain:
             worlds.append(copy)
         return worlds
 
+    def _build_distinctive_signatures(self) -> None:
+        action_edges: dict[str, set[tuple[int, int]]] = {}
+        for action, prototypes in self.prototypes.items():
+            merged: set[tuple[int, int]] = set()
+            for prototype in prototypes:
+                merged.update(tuple(edge) for edge in prototype.traversed_edges)
+            action_edges[action] = merged
+
+        for action in ACTIONS:
+            other_edges: set[tuple[int, int]] = set()
+            for other_action, edges in action_edges.items():
+                if other_action != action:
+                    other_edges.update(edges)
+            self.distinctive_edges[action] = action_edges[action] - other_edges
+
     def _train(self) -> None:
         worlds = self._training_worlds()
         for world in worlds:
             action = shortest_action(world)
-            self.training_examples.append({
-                "puzzle": world.name, "player": list(world.player), "goal": list(world.goal),
-                "action": action, "facts": [fact.label for fact in facts_for_world(world)],
-            })
+            self.training_examples.append(
+                {
+                    "puzzle": world.name,
+                    "player": list(world.player),
+                    "goal": list(world.goal),
+                    "action": action,
+                    "facts": [fact.label for fact in facts_for_world(world)],
+                }
+            )
             for _ in range(self.repeats):
                 context, _ = self._world_context(world, learn=True)
                 self._continue(context, action, learn=True)
+
         for world in worlds:
             action = shortest_action(world)
             context, _ = self._world_context(world, learn=False)
             self.prototypes[action].append(self._continue(context, None, learn=False))
 
+        self._build_distinctive_signatures()
+
     def decide(self, world: PuzzleWorld) -> dict:
         if world.solved:
             return {
-                "selected_action": "停止", "speech": "ゴールに到着しました。停止します。",
-                "facts": [fact.label for fact in facts_for_world(world)], "candidates": [],
-                "raw_nodes": 0, "raw_edges": 0,
+                "selected_action": "停止",
+                "speech": "ゴールに到着しました。停止します。",
+                "facts": [fact.label for fact in facts_for_world(world)],
+                "candidates": [],
+                "raw_nodes": 0,
+                "raw_edges": 0,
             }
+
         context, labels = self._world_context(world, learn=False)
         raw = self._continue(context, None, learn=False)
         raw_nodes = set(raw.activated_nodes)
         raw_edges = {tuple(edge) for edge in raw.traversed_edges}
         candidates: list[ActionCandidate] = []
+
         for action, prototypes in self.prototypes.items():
             best = ActionCandidate(action, 0.0, 0.0, 0.0, 0, 0)
+            distinctive = self.distinctive_edges[action]
+            distinctive_score = (
+                len(raw_edges & distinctive) / len(distinctive)
+                if distinctive
+                else 0.0
+            )
+
             for prototype in prototypes:
                 p_nodes = set(prototype.activated_nodes)
                 p_edges = {tuple(edge) for edge in prototype.traversed_edges}
                 node_score = _jaccard(raw_nodes, p_nodes)
                 edge_score = _jaccard(raw_edges, p_edges)
-                score = 0.35 * node_score + 0.65 * edge_score
+                score = (
+                    0.20 * node_score
+                    + 0.45 * edge_score
+                    + 0.35 * distinctive_score
+                )
                 if score > best.score:
-                    best = ActionCandidate(action, score, node_score, edge_score,
-                                           len(raw_nodes & p_nodes), len(raw_edges & p_edges))
+                    best = ActionCandidate(
+                        action,
+                        score,
+                        node_score,
+                        edge_score,
+                        len(raw_nodes & p_nodes),
+                        len(raw_edges & p_edges),
+                    )
+
             if action != "停止" and not world.can_move(action):
-                best = ActionCandidate(action, best.score * 0.30, best.node_score, best.edge_score,
-                                       best.common_nodes, best.common_edges)
+                best = ActionCandidate(
+                    action,
+                    best.score * 0.30,
+                    best.node_score,
+                    best.edge_score,
+                    best.common_nodes,
+                    best.common_edges,
+                )
             candidates.append(best)
+
         candidates.sort(key=lambda item: (-item.score, item.action))
         selected = candidates[0].action if candidates else "停止"
         speech = f"{selected}します。" if selected != "停止" else "停止します。"
         return {
-            "selected_action": selected, "speech": speech, "facts": labels,
+            "selected_action": selected,
+            "speech": speech,
+            "facts": labels,
             "candidates": [item.to_dict() for item in candidates],
-            "raw_nodes": len(raw_nodes), "raw_edges": len(raw_edges),
+            "raw_nodes": len(raw_nodes),
+            "raw_edges": len(raw_edges),
         }
