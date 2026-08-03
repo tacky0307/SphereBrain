@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections import deque
+from dataclasses import dataclass
 
 from semantic_encoder_v2 import StructuredInput, component_nodes
 from semantic_encoder_v2_contextual import (
@@ -111,6 +111,31 @@ def _direction_label(delta: int, negative: str, positive: str) -> str:
     return "同じ"
 
 
+def _goal_passage_facts(world: PuzzleWorld) -> list[Fact]:
+    """Bind goal direction and passability into reusable world relations."""
+    pr, pc = world.player
+    gr, gc = world.goal
+    facts: list[Fact] = []
+
+    vertical = _direction_label(gr - pr, "上", "下")
+    horizontal = _direction_label(gc - pc, "左", "右")
+
+    if vertical != "同じ":
+        action = f"{vertical}へ移動"
+        state = "進める" if world.can_move(action) else "障害物"
+        facts.append(Fact("Goal方向", "上下通行", f"{vertical}へ{state}"))
+
+    if horizontal != "同じ":
+        action = f"{horizontal}へ移動"
+        state = "進める" if world.can_move(action) else "障害物"
+        facts.append(Fact("Goal方向", "左右通行", f"{horizontal}へ{state}"))
+
+    if world.solved:
+        facts.append(Fact("Goal方向", "到達状態", "到着済み"))
+
+    return facts
+
+
 def facts_for_world(world: PuzzleWorld) -> list[Fact]:
     pr, pc = world.player
     gr, gc = world.goal
@@ -133,6 +158,7 @@ def facts_for_world(world: PuzzleWorld) -> list[Fact]:
                 "移動可能" if world.can_move(action) else "障害物",
             )
         )
+    facts.extend(_goal_passage_facts(world))
     facts.append(Fact("Player", "Goal接触", "している" if world.solved else "していない"))
     return facts
 
@@ -170,11 +196,6 @@ def representative_world(player: tuple[int, int], goal: tuple[int, int], name: s
 
 
 def action_tail(result, tail_steps: int = 4) -> tuple[set[int], set[tuple[int, int]]]:
-    """Extract the late-stage route where the activity is converging on an action.
-
-    The early route contains mostly shared world observation and 'next action'
-    processing. The final history steps are a better readout of the action branch.
-    """
     history = list(result.activation_history or [])
     if not history:
         nodes = set(result.activated_nodes)
@@ -182,9 +203,7 @@ def action_tail(result, tail_steps: int = 4) -> tuple[set[int], set[tuple[int, i
         nodes = {int(node) for step in history[-max(1, tail_steps):] for node in step}
     all_edges = {tuple(sorted((int(a), int(b)))) for a, b in result.traversed_edges}
     edges = {edge for edge in all_edges if edge[0] in nodes and edge[1] in nodes}
-    if not edges:
-        edges = all_edges
-    return nodes, edges
+    return nodes, edges or all_edges
 
 
 class PuzzleSphereBrain:
@@ -196,10 +215,12 @@ class PuzzleSphereBrain:
         self._train()
 
     def _world_context(self, world: PuzzleWorld, *, learn: bool) -> tuple[dict[int, float], list[str]]:
-        contexts, labels = [], []
+        contexts = []
+        labels = []
         for fact in facts_for_world(world):
             exp = encode_and_experience_contextual(self.brain, fact.as_input(), learn=learn)
-            contexts.append((result_to_context(exp.content_result), 1.0))
+            scale = 1.35 if fact.subject == "Goal方向" else 1.0
+            contexts.append((result_to_context(exp.content_result), scale))
             labels.append(fact.label)
         return merge_contexts(*contexts), labels
 
@@ -223,12 +244,7 @@ class PuzzleSphereBrain:
         )
         if action is None:
             return self.brain.propagate_contextual(
-                [],
-                decision_context,
-                steps=10,
-                threshold=0.18,
-                noise=0.0,
-                learn=False,
+                [], decision_context, steps=10, threshold=0.18, noise=0.0, learn=False
             )
         content_sources = (
             component_nodes(self.brain, "role:content", "content", 2)
@@ -296,8 +312,7 @@ class PuzzleSphereBrain:
             for other in other_prototypes:
                 _, tail_edges = action_tail(other)
                 other_edges.update(tail_edges)
-        distinctive = prototype_edges - other_edges
-        return distinctive or prototype_edges
+        return (prototype_edges - other_edges) or prototype_edges
 
     def decide(self, world: PuzzleWorld) -> dict:
         if world.solved:
@@ -324,11 +339,7 @@ class PuzzleSphereBrain:
                 node_score = _jaccard(raw_tail_nodes, prototype_nodes)
                 edge_score = _jaccard(raw_tail_edges, prototype_edges)
                 distinctive = self._distinctive_edges(action, prototype)
-                distinctive_score = (
-                    len(raw_tail_edges & distinctive) / len(distinctive)
-                    if distinctive
-                    else 0.0
-                )
+                distinctive_score = len(raw_tail_edges & distinctive) / len(distinctive) if distinctive else 0.0
                 score = 0.25 * node_score + 0.45 * edge_score + 0.30 * distinctive_score
                 if score > best.score:
                     best = ActionCandidate(
@@ -342,23 +353,13 @@ class PuzzleSphereBrain:
 
             if action != "停止" and not world.can_move(action):
                 best = ActionCandidate(
-                    action,
-                    best.score * 0.25,
-                    best.node_score,
-                    best.edge_score,
-                    best.common_nodes,
-                    best.common_edges,
+                    action, best.score * 0.25, best.node_score, best.edge_score,
+                    best.common_nodes, best.common_edges,
                 )
             if action == "停止" and not world.solved:
-                # Stopping before the goal is a valid neural candidate, but the world
-                # state provides strong contrary evidence: Goal接触＝していない.
                 best = ActionCandidate(
-                    action,
-                    best.score * 0.82,
-                    best.node_score,
-                    best.edge_score,
-                    best.common_nodes,
-                    best.common_edges,
+                    action, best.score * 0.82, best.node_score, best.edge_score,
+                    best.common_nodes, best.common_edges,
                 )
             candidates.append(best)
 
@@ -374,5 +375,5 @@ class PuzzleSphereBrain:
             "raw_edges": len(raw_edges_all),
             "tail_nodes": len(raw_tail_nodes),
             "tail_edges": len(raw_tail_edges),
-            "decoder": "Action Tail Decoder",
+            "decoder": "Action Tail Decoder + Goal Passage Context",
         }
