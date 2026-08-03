@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 
+import numpy as np
+
 from semantic_encoder_v2 import StructuredInput, component_nodes
 from semantic_encoder_v2_contextual import (
     encode_and_experience_contextual,
@@ -10,7 +12,6 @@ from semantic_encoder_v2_contextual import (
     merge_contexts,
     result_to_context,
 )
-from sphere_world_brain import ActionCandidate, _jaccard
 
 ACTIONS = ["上へ移動", "下へ移動", "左へ移動", "右へ移動", "停止"]
 DELTAS = {
@@ -164,6 +165,7 @@ def facts_for_world(world: PuzzleWorld) -> list[Fact]:
 
 
 def shortest_action(world: PuzzleWorld) -> str:
+    """Teacher used only while creating training experiences."""
     if world.solved:
         return "停止"
     queue = deque([(world.player, [])])
@@ -195,23 +197,17 @@ def representative_world(player: tuple[int, int], goal: tuple[int, int], name: s
     return world
 
 
-def action_tail(result, tail_steps: int = 4) -> tuple[set[int], set[tuple[int, int]]]:
-    history = list(result.activation_history or [])
-    if not history:
-        nodes = set(result.activated_nodes)
-    else:
-        nodes = {int(node) for step in history[-max(1, tail_steps):] for node in step}
-    all_edges = {tuple(sorted((int(a), int(b)))) for a, b in result.traversed_edges}
-    edges = {edge for edge in all_edges if edge[0] in nodes and edge[1] in nodes}
-    return nodes, edges or all_edges
-
-
 class PuzzleSphereBrain:
-    def __init__(self, repeats: int = 5) -> None:
+    """Puzzle brain with fixed motor output nodes (Action Ports)."""
+
+    def __init__(self, repeats: int = 7) -> None:
         self.brain = load_contextual_brain()
         self.repeats = max(1, int(repeats))
-        self.prototypes: dict[str, list] = {action: [] for action in ACTIONS}
         self.training_examples: list[dict] = []
+        self.action_ports: dict[str, list[int]] = {
+            action: component_nodes(self.brain, "action_port", action, 5)
+            for action in ACTIONS
+        }
         self._train()
 
     def _world_context(self, world: PuzzleWorld, *, learn: bool) -> tuple[dict[int, float], list[str]]:
@@ -224,7 +220,7 @@ class PuzzleSphereBrain:
             labels.append(fact.label)
         return merge_contexts(*contexts), labels
 
-    def _continue(self, context: dict[int, float], action: str | None, *, learn: bool):
+    def _decision_context(self, world_context: dict[int, float], *, learn: bool) -> dict[int, float]:
         noise = 0.004 if learn else 0.0
         relation_sources = (
             component_nodes(self.brain, "role:relation", "relation", 2)
@@ -232,32 +228,70 @@ class PuzzleSphereBrain:
         )
         relation_result = self.brain.propagate_contextual(
             relation_sources,
-            context,
+            world_context,
             steps=8,
             threshold=0.18,
             noise=noise,
             learn=learn,
         )
-        decision_context = merge_contexts(
-            (context, 0.78),
+        return merge_contexts(
+            (world_context, 0.78),
             (result_to_context(relation_result), 1.0),
         )
-        if action is None:
-            return self.brain.propagate_contextual(
-                [], decision_context, steps=10, threshold=0.18, noise=0.0, learn=False
-            )
-        content_sources = (
-            component_nodes(self.brain, "role:content", "content", 2)
-            + component_nodes(self.brain, "content", action, 3)
-        )
-        return self.brain.propagate_contextual(
-            content_sources,
+
+    def _train_port(self, decision_context: dict[int, float], action: str) -> None:
+        """Co-activate the correct motor port and the current world context."""
+        port_sources = self.action_ports[action]
+        self.brain.propagate_contextual(
+            port_sources,
             decision_context,
-            steps=10,
+            steps=12,
             threshold=0.18,
-            noise=noise,
-            learn=learn,
+            noise=0.004,
+            learn=True,
+            context_anchor=0.72,
+            context_decay=0.96,
+            resonance=True,
         )
+
+    def _read_ports(self, decision_context: dict[int, float]):
+        """Let activity propagate freely, then measure arrival at each motor port."""
+        result = self.brain.propagate_contextual(
+            [],
+            decision_context,
+            steps=16,
+            threshold=0.16,
+            noise=0.0,
+            learn=False,
+            context_anchor=0.64,
+            context_decay=0.96,
+            resonance=True,
+        )
+        history = list(result.activation_history or [])
+        final = np.asarray(result.final_activation, dtype=float)
+        recent = history[-5:] if history else []
+
+        raw_scores: dict[str, float] = {}
+        details: dict[str, dict] = {}
+        for action, nodes in self.action_ports.items():
+            final_strength = max((float(final[node]) for node in nodes), default=0.0)
+            arrival_count = sum(1 for step in recent for node in nodes if node in step)
+            ever_count = sum(1 for node in nodes if node in set(result.activated_nodes))
+            incoming = sum(
+                1
+                for a, b in result.traversed_edges
+                if int(a) in nodes or int(b) in nodes
+            )
+            score = final_strength + 0.10 * arrival_count + 0.04 * ever_count + 0.015 * incoming
+            raw_scores[action] = score
+            details[action] = {
+                "port_nodes": nodes,
+                "final_strength": final_strength,
+                "recent_arrivals": arrival_count,
+                "activated_port_nodes": ever_count,
+                "incoming_edges": incoming,
+            }
+        return result, raw_scores, details
 
     def _training_worlds(self) -> list[PuzzleWorld]:
         worlds = [
@@ -282,8 +316,7 @@ class PuzzleSphereBrain:
         return worlds
 
     def _train(self) -> None:
-        worlds = self._training_worlds()
-        for world in worlds:
+        for world in self._training_worlds():
             action = shortest_action(world)
             self.training_examples.append(
                 {
@@ -292,27 +325,13 @@ class PuzzleSphereBrain:
                     "goal": list(world.goal),
                     "action": action,
                     "facts": [fact.label for fact in facts_for_world(world)],
+                    "port_nodes": self.action_ports[action],
                 }
             )
             for _ in range(self.repeats):
-                context, _ = self._world_context(world, learn=True)
-                self._continue(context, action, learn=True)
-
-        for world in worlds:
-            action = shortest_action(world)
-            context, _ = self._world_context(world, learn=False)
-            self.prototypes[action].append(self._continue(context, None, learn=False))
-
-    def _distinctive_edges(self, action: str, prototype) -> set[tuple[int, int]]:
-        _, prototype_edges = action_tail(prototype)
-        other_edges: set[tuple[int, int]] = set()
-        for other_action, other_prototypes in self.prototypes.items():
-            if other_action == action:
-                continue
-            for other in other_prototypes:
-                _, tail_edges = action_tail(other)
-                other_edges.update(tail_edges)
-        return (prototype_edges - other_edges) or prototype_edges
+                world_context, _ = self._world_context(world, learn=True)
+                decision_context = self._decision_context(world_context, learn=True)
+                self._train_port(decision_context, action)
 
     def decide(self, world: PuzzleWorld) -> dict:
         if world.solved:
@@ -323,57 +342,46 @@ class PuzzleSphereBrain:
                 "candidates": [],
                 "raw_nodes": 0,
                 "raw_edges": 0,
+                "decoder": "Action Port Decoder",
+                "action_ports": self.action_ports,
             }
 
-        context, labels = self._world_context(world, learn=False)
-        raw = self._continue(context, None, learn=False)
-        raw_nodes_all = set(raw.activated_nodes)
-        raw_edges_all = {tuple(sorted(edge)) for edge in raw.traversed_edges}
-        raw_tail_nodes, raw_tail_edges = action_tail(raw)
+        world_context, labels = self._world_context(world, learn=False)
+        decision_context = self._decision_context(world_context, learn=False)
+        raw, raw_scores, port_details = self._read_ports(decision_context)
 
-        candidates: list[ActionCandidate] = []
-        for action, prototypes in self.prototypes.items():
-            best = ActionCandidate(action, 0.0, 0.0, 0.0, 0, 0)
-            for prototype in prototypes:
-                prototype_nodes, prototype_edges = action_tail(prototype)
-                node_score = _jaccard(raw_tail_nodes, prototype_nodes)
-                edge_score = _jaccard(raw_tail_edges, prototype_edges)
-                distinctive = self._distinctive_edges(action, prototype)
-                distinctive_score = len(raw_tail_edges & distinctive) / len(distinctive) if distinctive else 0.0
-                score = 0.25 * node_score + 0.45 * edge_score + 0.30 * distinctive_score
-                if score > best.score:
-                    best = ActionCandidate(
-                        action,
-                        score,
-                        node_score,
-                        edge_score,
-                        len(raw_tail_nodes & prototype_nodes),
-                        len(raw_tail_edges & prototype_edges),
-                    )
-
+        adjusted: dict[str, float] = {}
+        for action, score in raw_scores.items():
             if action != "停止" and not world.can_move(action):
-                best = ActionCandidate(
-                    action, best.score * 0.25, best.node_score, best.edge_score,
-                    best.common_nodes, best.common_edges,
-                )
+                score *= 0.08
             if action == "停止" and not world.solved:
-                best = ActionCandidate(
-                    action, best.score * 0.82, best.node_score, best.edge_score,
-                    best.common_nodes, best.common_edges,
-                )
-            candidates.append(best)
+                score *= 0.22
+            adjusted[action] = max(0.0, score)
 
-        candidates.sort(key=lambda item: (-item.score, item.action))
-        selected = candidates[0].action if candidates else "停止"
+        maximum = max(adjusted.values(), default=1.0) or 1.0
+        candidates = []
+        for action in ACTIONS:
+            normalized = adjusted[action] / maximum
+            details = port_details[action]
+            candidates.append(
+                {
+                    "action": action,
+                    "score": normalized,
+                    "port_strength": adjusted[action],
+                    **details,
+                }
+            )
+        candidates.sort(key=lambda item: (-item["score"], item["action"]))
+        selected = candidates[0]["action"] if candidates else "停止"
         speech = f"{selected}します。" if selected != "停止" else "停止します。"
+
         return {
             "selected_action": selected,
             "speech": speech,
             "facts": labels,
-            "candidates": [item.to_dict() for item in candidates],
-            "raw_nodes": len(raw_nodes_all),
-            "raw_edges": len(raw_edges_all),
-            "tail_nodes": len(raw_tail_nodes),
-            "tail_edges": len(raw_tail_edges),
-            "decoder": "Action Tail Decoder + Goal Passage Context",
+            "candidates": candidates,
+            "raw_nodes": len(set(raw.activated_nodes)),
+            "raw_edges": len({tuple(sorted(edge)) for edge in raw.traversed_edges}),
+            "decoder": "Action Port Decoder",
+            "action_ports": self.action_ports,
         }
