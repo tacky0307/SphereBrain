@@ -20,7 +20,7 @@ PAGE = r'''<!doctype html>
 </head>
 <body>
 <div class="wrap">
-<section class="hero"><div style="color:var(--cyan);letter-spacing:.14em;font-weight:800">RELATION EXPERIENCE → ANSWER</div><h1>SphereTalk Category Lab</h1><p>「犬は動物ですか？」のような所属関係を、経験経路から答える研究用実験です。</p></section>
+<section class="hero"><div style="color:var(--cyan);letter-spacing:.14em;font-weight:800">RELATION EXPERIENCE → ANSWER</div><h1>SphereTalk Category Lab</h1><p>経験済みの主体について、所属関係を経験経路から答える説明用実験です。</p></section>
 <div class="grid">
 <section class="card">
 <h2>質問を組み立てる</h2>
@@ -30,7 +30,7 @@ PAGE = r'''<!doctype html>
 <button class="btn" id="ask">質問する</button>
 </div>
 <div class="question" id="question">犬は動物ですか？</div>
-<p class="note">一致・不一致・不明の文章を直接選ばず、現在経路と経験済みの分類経路を比較します。</p>
+<p class="note">この画面では未経験主体を扱いません。一致・不一致の2種類だけを、現在経路と経験済み分類経路の比較から選びます。</p>
 <h3>与えた分類経験</h3>
 <div class="training">{% for s,c,a in training %}<div class="train">{{s}}｜種類｜{{c}} → {{a}}</div>{% endfor %}</div>
 </section>
@@ -47,7 +47,7 @@ const subject=document.getElementById('subject'),category=document.getElementByI
 const question=document.getElementById('question'),speech=document.getElementById('speech'),mode=document.getElementById('mode'),raw=document.getElementById('raw'),candidates=document.getElementById('candidates'),facts=document.getElementById('facts');
 function updateQuestion(){question.textContent=`${subject.value}は${category.value}ですか？`}
 subject.addEventListener('change',updateQuestion);category.addEventListener('change',updateQuestion);
-ask.addEventListener('click',async()=>{ask.disabled=true;speech.textContent='考えています…';try{const res=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject:subject.value,category:category.value})});const d=await res.json();if(!res.ok)throw new Error(d.error||'失敗しました');speech.textContent=d.speech;mode.textContent=d.trained_pair?'経験済みの組合せ':(d.trained_subject?'主体は経験済み・組合せ未経験':'未経験主体');raw.textContent=`Raw Node ${d.raw_nodes} / Edge ${d.raw_edges}`;candidates.innerHTML=d.candidates.map(x=>`<div class="candidate"><b>${x.answer}</b><div class="track"><div class="fill" style="width:${(x.score*100).toFixed(1)}%"></div></div><span>${(x.score*100).toFixed(1)}%</span></div>`).join('');facts.innerHTML=d.facts.map(x=>`<div class="fact">${x}</div>`).join('');if('speechSynthesis' in window){speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(d.speech);u.lang='ja-JP';speechSynthesis.speak(u)}}catch(e){speech.textContent=e.message}finally{ask.disabled=false}});
+ask.addEventListener('click',async()=>{ask.disabled=true;speech.textContent='考えています…';try{const res=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject:subject.value,category:category.value})});const d=await res.json();if(!res.ok)throw new Error(d.error||'失敗しました');speech.textContent=d.speech;mode.textContent='経験済みの組合せ';raw.textContent=`Raw Node ${d.raw_nodes} / Edge ${d.raw_edges}`;candidates.innerHTML=d.candidates.map(x=>`<div class="candidate"><b>${x.answer}</b><div class="track"><div class="fill" style="width:${(x.score*100).toFixed(1)}%"></div></div><span>${(x.score*100).toFixed(1)}%</span></div>`).join('');facts.innerHTML=d.facts.map(x=>`<div class="fact">${x}</div>`).join('');if('speechSynthesis' in window){speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(d.speech);u.lang='ja-JP';speechSynthesis.speak(u)}}catch(e){speech.textContent=e.message}finally{ask.disabled=false}});
 updateQuestion();
 </script>
 </body></html>'''
