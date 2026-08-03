@@ -169,12 +169,29 @@ def representative_world(player: tuple[int, int], goal: tuple[int, int], name: s
     return world
 
 
+def action_tail(result, tail_steps: int = 4) -> tuple[set[int], set[tuple[int, int]]]:
+    """Extract the late-stage route where the activity is converging on an action.
+
+    The early route contains mostly shared world observation and 'next action'
+    processing. The final history steps are a better readout of the action branch.
+    """
+    history = list(result.activation_history or [])
+    if not history:
+        nodes = set(result.activated_nodes)
+    else:
+        nodes = {int(node) for step in history[-max(1, tail_steps):] for node in step}
+    all_edges = {tuple(sorted((int(a), int(b)))) for a, b in result.traversed_edges}
+    edges = {edge for edge in all_edges if edge[0] in nodes and edge[1] in nodes}
+    if not edges:
+        edges = all_edges
+    return nodes, edges
+
+
 class PuzzleSphereBrain:
     def __init__(self, repeats: int = 5) -> None:
         self.brain = load_contextual_brain()
         self.repeats = max(1, int(repeats))
         self.prototypes: dict[str, list] = {action: [] for action in ACTIONS}
-        self.distinctive_edges: dict[str, set[tuple[int, int]]] = {action: set() for action in ACTIONS}
         self.training_examples: list[dict] = []
         self._train()
 
@@ -248,21 +265,6 @@ class PuzzleSphereBrain:
             worlds.append(copy)
         return worlds
 
-    def _build_distinctive_signatures(self) -> None:
-        action_edges: dict[str, set[tuple[int, int]]] = {}
-        for action, prototypes in self.prototypes.items():
-            merged: set[tuple[int, int]] = set()
-            for prototype in prototypes:
-                merged.update(tuple(edge) for edge in prototype.traversed_edges)
-            action_edges[action] = merged
-
-        for action in ACTIONS:
-            other_edges: set[tuple[int, int]] = set()
-            for other_action, edges in action_edges.items():
-                if other_action != action:
-                    other_edges.update(edges)
-            self.distinctive_edges[action] = action_edges[action] - other_edges
-
     def _train(self) -> None:
         worlds = self._training_worlds()
         for world in worlds:
@@ -285,7 +287,17 @@ class PuzzleSphereBrain:
             context, _ = self._world_context(world, learn=False)
             self.prototypes[action].append(self._continue(context, None, learn=False))
 
-        self._build_distinctive_signatures()
+    def _distinctive_edges(self, action: str, prototype) -> set[tuple[int, int]]:
+        _, prototype_edges = action_tail(prototype)
+        other_edges: set[tuple[int, int]] = set()
+        for other_action, other_prototypes in self.prototypes.items():
+            if other_action == action:
+                continue
+            for other in other_prototypes:
+                _, tail_edges = action_tail(other)
+                other_edges.update(tail_edges)
+        distinctive = prototype_edges - other_edges
+        return distinctive or prototype_edges
 
     def decide(self, world: PuzzleWorld) -> dict:
         if world.solved:
@@ -300,43 +312,49 @@ class PuzzleSphereBrain:
 
         context, labels = self._world_context(world, learn=False)
         raw = self._continue(context, None, learn=False)
-        raw_nodes = set(raw.activated_nodes)
-        raw_edges = {tuple(edge) for edge in raw.traversed_edges}
-        candidates: list[ActionCandidate] = []
+        raw_nodes_all = set(raw.activated_nodes)
+        raw_edges_all = {tuple(sorted(edge)) for edge in raw.traversed_edges}
+        raw_tail_nodes, raw_tail_edges = action_tail(raw)
 
+        candidates: list[ActionCandidate] = []
         for action, prototypes in self.prototypes.items():
             best = ActionCandidate(action, 0.0, 0.0, 0.0, 0, 0)
-            distinctive = self.distinctive_edges[action]
-            distinctive_score = (
-                len(raw_edges & distinctive) / len(distinctive)
-                if distinctive
-                else 0.0
-            )
-
             for prototype in prototypes:
-                p_nodes = set(prototype.activated_nodes)
-                p_edges = {tuple(edge) for edge in prototype.traversed_edges}
-                node_score = _jaccard(raw_nodes, p_nodes)
-                edge_score = _jaccard(raw_edges, p_edges)
-                score = (
-                    0.20 * node_score
-                    + 0.45 * edge_score
-                    + 0.35 * distinctive_score
+                prototype_nodes, prototype_edges = action_tail(prototype)
+                node_score = _jaccard(raw_tail_nodes, prototype_nodes)
+                edge_score = _jaccard(raw_tail_edges, prototype_edges)
+                distinctive = self._distinctive_edges(action, prototype)
+                distinctive_score = (
+                    len(raw_tail_edges & distinctive) / len(distinctive)
+                    if distinctive
+                    else 0.0
                 )
+                score = 0.25 * node_score + 0.45 * edge_score + 0.30 * distinctive_score
                 if score > best.score:
                     best = ActionCandidate(
                         action,
                         score,
                         node_score,
                         edge_score,
-                        len(raw_nodes & p_nodes),
-                        len(raw_edges & p_edges),
+                        len(raw_tail_nodes & prototype_nodes),
+                        len(raw_tail_edges & prototype_edges),
                     )
 
             if action != "停止" and not world.can_move(action):
                 best = ActionCandidate(
                     action,
-                    best.score * 0.30,
+                    best.score * 0.25,
+                    best.node_score,
+                    best.edge_score,
+                    best.common_nodes,
+                    best.common_edges,
+                )
+            if action == "停止" and not world.solved:
+                # Stopping before the goal is a valid neural candidate, but the world
+                # state provides strong contrary evidence: Goal接触＝していない.
+                best = ActionCandidate(
+                    action,
+                    best.score * 0.82,
                     best.node_score,
                     best.edge_score,
                     best.common_nodes,
@@ -352,6 +370,9 @@ class PuzzleSphereBrain:
             "speech": speech,
             "facts": labels,
             "candidates": [item.to_dict() for item in candidates],
-            "raw_nodes": len(raw_nodes),
-            "raw_edges": len(raw_edges),
+            "raw_nodes": len(raw_nodes_all),
+            "raw_edges": len(raw_edges_all),
+            "tail_nodes": len(raw_tail_nodes),
+            "tail_edges": len(raw_tail_edges),
+            "decoder": "Action Tail Decoder",
         }
