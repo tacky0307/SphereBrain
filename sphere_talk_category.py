@@ -9,24 +9,37 @@ from semantic_encoder_v2_contextual import (
 )
 from sphere_world_brain import _jaccard
 
-SUBJECTS = ["犬", "猫", "鳥", "魚", "車", "船", "カエル"]
-CATEGORIES = ["動物", "人工物"]
+CATEGORIES = ["動物", "人工物", "自然", "植物"]
+
+# 一つの主分類だけを持つ、小さな実験世界。
+KNOWN_CLASSIFICATIONS = {
+    "犬": "動物",
+    "猫": "動物",
+    "鳥": "動物",
+    "魚": "動物",
+    "車": "人工物",
+    "船": "人工物",
+    "機械": "人工物",
+    "山": "自然",
+    "海": "自然",
+    "川": "自然",
+    "森": "自然",
+    "花": "植物",
+    "木": "植物",
+    "草": "植物",
+}
+
+# 未経験主体。既知概念へ似ていても断定せず、不明を返すために残す。
+UNKNOWN_SUBJECTS = ["カエル", "ロボット", "雲"]
+SUBJECTS = list(KNOWN_CLASSIFICATIONS) + UNKNOWN_SUBJECTS
 ANSWERS = ["一致", "不一致", "不明"]
 
-# 研究用の明示経験。カエルは未経験として残す。
+# 各既知主体について、正しい分類を1件、誤分類を同数だけ教育する。
+# これにより一致・不一致の経験数を完全に対称化する。
 TRAINING_FACTS = [
-    ("犬", "動物", "一致"),
-    ("犬", "人工物", "不一致"),
-    ("猫", "動物", "一致"),
-    ("猫", "人工物", "不一致"),
-    ("鳥", "動物", "一致"),
-    ("鳥", "人工物", "不一致"),
-    ("魚", "動物", "一致"),
-    ("魚", "人工物", "不一致"),
-    ("車", "人工物", "一致"),
-    ("車", "動物", "不一致"),
-    ("船", "人工物", "一致"),
-    ("船", "動物", "不一致"),
+    (subject, category, "一致" if category == correct else "不一致")
+    for subject, correct in KNOWN_CLASSIFICATIONS.items()
+    for category in CATEGORIES
 ]
 
 
@@ -39,14 +52,13 @@ class CategoryExperience:
 
 
 def question_item(subject: str, category: str) -> StructuredInput:
-    # 主体・関係・内容をそのまま使い、分類関係の経路を形成する。
     return StructuredInput(subject, "種類", category)
 
 
 class SphereTalkCategoryBrain:
     """Classify a subject/category relation from experienced Core routes."""
 
-    def __init__(self, repeats: int = 8) -> None:
+    def __init__(self, repeats: int = 6) -> None:
         self.brain = load_contextual_brain()
         self.repeats = max(1, int(repeats))
         self.experiences: list[CategoryExperience] = []
@@ -60,13 +72,9 @@ class SphereTalkCategoryBrain:
         ).content_result
 
     def _train(self) -> None:
-        # 正例と負例を同数用意し、一方の答えへ偏らないようにする。
         for subject, category, answer in TRAINING_FACTS:
-            latest = None
             for _ in range(self.repeats):
-                latest = self._run(subject, category, learn=True)
-            assert latest is not None
-            # 推論と同条件のノイズなし経路を基準経路として保存する。
+                self._run(subject, category, learn=True)
             prototype = self._run(subject, category, learn=False)
             self.experiences.append(CategoryExperience(subject, category, answer, prototype))
 
@@ -86,14 +94,18 @@ class SphereTalkCategoryBrain:
         current_nodes = set(current.activated_nodes)
         current_edges = {tuple(sorted(edge)) for edge in current.traversed_edges}
 
-        trained_subject = any(item.subject == subject for item in self.experiences)
+        trained_subject = subject in KNOWN_CLASSIFICATIONS
         exact = [
-            item for item in self.experiences
+            item
+            for item in self.experiences
             if item.subject == subject and item.category == category
         ]
 
         answer_scores = {answer: 0.0 for answer in ANSWERS}
-        answer_details = {answer: {"node": 0.0, "edge": 0.0, "matches": 0} for answer in ANSWERS}
+        answer_details = {
+            answer: {"node": 0.0, "edge": 0.0, "matches": 0}
+            for answer in ANSWERS
+        }
 
         for item in self.experiences:
             prototype_nodes = set(item.result.activated_nodes)
@@ -102,11 +114,13 @@ class SphereTalkCategoryBrain:
             edge_score = _jaccard(current_edges, prototype_edges)
             score = 0.30 * node_score + 0.70 * edge_score
 
-            # 同一主体の経験を優先し、他主体の共通処理に支配されないようにする。
+            # 主体固有経路を最優先し、分類全体の共通経路への偏りを抑える。
             if item.subject == subject:
-                score *= 1.35
+                score *= 1.55
+                if item.category == category:
+                    score *= 1.20
             else:
-                score *= 0.55
+                score *= 0.42
 
             if score > answer_scores[item.answer]:
                 answer_scores[item.answer] = score
@@ -116,21 +130,22 @@ class SphereTalkCategoryBrain:
                     "matches": len(current_edges & prototype_edges),
                 }
 
-        # 未経験主体では、既知主体の似た経路だけで断定しない。
+        # 未経験主体は、既知の似た経路だけで分類しない。
         if not trained_subject:
-            answer_scores["不明"] = max(answer_scores.values(), default=0.0) + 0.20
+            answer_scores["不明"] = max(answer_scores.values(), default=0.0) + 0.25
         elif not exact:
-            answer_scores["不明"] = max(answer_scores.values(), default=0.0) + 0.08
+            answer_scores["不明"] = max(answer_scores.values(), default=0.0) + 0.10
 
         maximum = max(answer_scores.values(), default=1.0) or 1.0
-        candidates = []
-        for answer in ANSWERS:
-            candidates.append({
+        candidates = [
+            {
                 "answer": answer,
                 "score": answer_scores[answer] / maximum,
                 "raw_score": answer_scores[answer],
                 **answer_details[answer],
-            })
+            }
+            for answer in ANSWERS
+        ]
         candidates.sort(key=lambda item: (-item["score"], item["answer"]))
         selected = candidates[0]["answer"] if candidates else "不明"
 
@@ -151,5 +166,5 @@ class SphereTalkCategoryBrain:
             "candidates": candidates,
             "raw_nodes": len(current_nodes),
             "raw_edges": len(current_edges),
-            "decoder": "Category Route Decoder",
+            "decoder": "Category Route Decoder — Four Categories",
         }
