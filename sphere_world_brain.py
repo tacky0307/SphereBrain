@@ -61,20 +61,36 @@ class SphereWorldBrain:
         return f"Player{labels[player_position]}_Enemy{labels[enemy_position]}"
 
     def _train_minimal_policy(self) -> None:
-        # Train every possible 3x3 state on the disposable Core copy.
+        """Train the disposable Core, then record fair Raw Output prototypes.
+
+        The previous implementation compared a no-content Raw Output probe with
+        content-stage results that already contained an explicit action stimulus.
+        That made the comparison asymmetric.  Here all nine world states are
+        trained first, then each state is probed again without an action/content
+        stimulus.  Decision-time Raw Output is therefore compared only with
+        Raw Output produced under the same conditions.
+        """
+        states: list[tuple[int, int, str]] = []
+
+        # Phase 1: form state -> action experiences in the disposable Core.
         for player_position in range(3):
             for enemy_position in range(3):
                 action = self.action_for_positions(player_position, enemy_position)
+                states.append((player_position, enemy_position, action))
                 item = StructuredInput(
                     self.state_subject(player_position, enemy_position),
                     "次行動",
                     action,
                 )
-                latest = None
                 for _ in range(self.repeats):
-                    latest = encode_and_experience_contextual(self.brain, item, learn=True)
-                if latest is not None:
-                    self.prototypes[action].append(latest.content_result)
+                    encode_and_experience_contextual(self.brain, item, learn=True)
+
+        # Phase 2: create prototypes from no-content Raw Output, exactly like
+        # the state presented at decision time.
+        for player_position, enemy_position, action in states:
+            world = SphereWorld(player_position, enemy_position)
+            _, _, raw_result = self._probe(world)
+            self.prototypes[action].append(raw_result)
 
     def _probe(self, world: SphereWorld):
         subject = self.state_subject(world.player.position, world.enemy.position)
@@ -106,7 +122,8 @@ class SphereWorldBrain:
         relation_context = result_to_context(relation_result)
         context = merge_contexts((subject_context, 0.72), (relation_context, 1.0))
 
-        # No content/action stimulus is supplied here. This is the raw continuation.
+        # No content/action stimulus is supplied. This is the Core's raw
+        # continuation from the current world state plus the next-action cue.
         raw_result = self.brain.propagate_contextual(
             [],
             context,
