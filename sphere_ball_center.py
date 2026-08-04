@@ -6,9 +6,9 @@ from semantic_encoder_v2 import StructuredInput
 from semantic_encoder_v2_contextual import encode_and_experience_contextual, load_contextual_brain
 from sphere_world_brain import _jaccard
 
-GRID_SIZE = 4
-TARGET_ROW = 2
-TARGET_COL = 2
+GRID_SIZE = 5
+TARGET_ROW = 3
+TARGET_COL = 3
 TARGET_POSITION = f"{TARGET_ROW},{TARGET_COL}"
 ACTIONS = ["上へ移動", "下へ移動", "左へ移動", "右へ移動", "停止"]
 POSITIONS = [f"{row},{col}" for row in range(1, GRID_SIZE + 1) for col in range(1, GRID_SIZE + 1)]
@@ -38,7 +38,7 @@ class BallExperience:
 
 
 class BallCenterBrain:
-    """Move a ball one cell at a time toward a fixed target in a 4x4 world."""
+    """Move a ball one cell at a time toward the center of a 5x5 world."""
 
     def __init__(self, repeats: int = 8) -> None:
         self.brain = load_contextual_brain()
@@ -134,7 +134,7 @@ class BallCenterBrain:
         next_position = self._next_position(position, selected_action)
         expected_action = TRAINING[position]
         speech = (
-            "目標マスなので停止します。"
+            "中央の目標マスなので停止します。"
             if selected_action == "停止"
             else f"{selected_action}します。"
         )
@@ -152,7 +152,7 @@ class BallCenterBrain:
             "facts": [
                 f"ボール｜位置｜{position}",
                 f"目標｜位置｜{TARGET_POSITION}",
-                "要求｜行動｜目標へ1マス寄せる",
+                "要求｜行動｜中央へ1マス寄せる",
             ],
             "raw_nodes": len(current_nodes),
             "raw_edges": len(current_edges),
