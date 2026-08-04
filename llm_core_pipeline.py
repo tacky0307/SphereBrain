@@ -114,14 +114,24 @@ def load_brain() -> SphereBrain:
 
 
 def reset_experiment() -> None:
-    if BRAIN_FILE.exists():
-        BRAIN_FILE.unlink()
-    if DB_FILE.exists():
-        DB_FILE.unlink()
-    if PROJECTION_FILE.exists():
-        PROJECTION_FILE.unlink()
+    """Reset only this experiment without deleting open files on Windows.
+
+    SQLite/OneDrive/antivirus can temporarily keep the DB file open. Clearing
+    table contents and overwriting the Core avoids WinError 32 while preserving
+    the same experimental boundary.
+    """
+    DATA.mkdir(parents=True, exist_ok=True)
     initialize_db()
+    with sqlite3.connect(DB_FILE, timeout=30) as conn:
+        conn.execute("DELETE FROM experiences")
+        conn.execute("DELETE FROM sqlite_sequence WHERE name='experiences'")
+        conn.commit()
+
+    # Recreate and overwrite the isolated Core instead of unlinking its file.
     create_clean_brain()
+
+    # The projection is deterministic from PROJECTION_SEED. Keeping the existing
+    # matrix preserves identical input conditions between repeated experiments.
 
 
 def _projection(input_dim: int) -> np.ndarray:
