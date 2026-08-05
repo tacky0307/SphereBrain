@@ -7,6 +7,8 @@ import json
 import hashlib
 import numpy as np
 
+from structural_core_assist import StructuralAssistConfig, StructuralCoreAssist
+
 
 @dataclass
 class SignalResult:
@@ -30,6 +32,12 @@ class SphereBrain:
         max_branches: int = 2,
         max_active_per_step: int = 72,
         max_total_active_nodes: int = 100,
+        structural_assist_enabled: bool = False,
+        structural_gain: float = 0.02,
+        structural_tie_margin: float = 0.0025,
+        structural_near_zero_margin: float = 1e-8,
+        structural_relative_cap_ratio: float = 0.35,
+        structural_absolute_cap: float = 5e-5,
     ) -> None:
         self.node_count = node_count
         self.neighbors_per_node = neighbors_per_node
@@ -41,7 +49,25 @@ class SphereBrain:
         self.max_branches = max_branches
         self.max_active_per_step = max_active_per_step
         self.max_total_active_nodes = max_total_active_nodes
+        self.structural_assist_enabled = structural_assist_enabled
+        self.structural_gain = structural_gain
+        self.structural_tie_margin = structural_tie_margin
+        self.structural_near_zero_margin = structural_near_zero_margin
+        self.structural_relative_cap_ratio = structural_relative_cap_ratio
+        self.structural_absolute_cap = structural_absolute_cap
         self.rng = np.random.default_rng(seed)
+
+        self.structural_assist = StructuralCoreAssist(
+            StructuralAssistConfig(
+                enabled=structural_assist_enabled,
+                gain=structural_gain,
+                tie_margin=structural_tie_margin,
+                near_zero_margin=structural_near_zero_margin,
+                relative_cap_ratio=structural_relative_cap_ratio,
+                absolute_cap=structural_absolute_cap,
+            )
+        )
+        self.last_structural_assist_trace: list[dict] = []
 
         self.positions = self._generate_points_in_sphere(node_count)
         self.adjacency = np.zeros((node_count, node_count), dtype=bool)
@@ -50,6 +76,20 @@ class SphereBrain:
         self.node_usage = np.zeros(node_count, dtype=int)
 
         self._connect_nearest_nodes()
+
+    def set_structural_assist(self, enabled: bool) -> None:
+        """Enable or disable bounded structural assistance at runtime."""
+        self.structural_assist_enabled = bool(enabled)
+        self.structural_assist = StructuralCoreAssist(
+            StructuralAssistConfig(
+                enabled=self.structural_assist_enabled,
+                gain=self.structural_gain,
+                tie_margin=self.structural_tie_margin,
+                near_zero_margin=self.structural_near_zero_margin,
+                relative_cap_ratio=self.structural_relative_cap_ratio,
+                absolute_cap=self.structural_absolute_cap,
+            )
+        )
 
     def _generate_points_in_sphere(self, count: int) -> np.ndarray:
         directions = self.rng.normal(size=(count, 3))
@@ -102,6 +142,7 @@ class SphereBrain:
         learn: bool = True,
         context_nodes: Iterable[int] | None = None,
     ) -> SignalResult:
+        self.last_structural_assist_trace = []
         if self.propagation_mode == "legacy":
             return self._propagate_legacy(
                 source_nodes=source_nodes,
@@ -151,8 +192,9 @@ class SphereBrain:
         activated_nodes = set(np.flatnonzero(activation > 0).tolist())
         traversed_edges: set[tuple[int, int]] = set()
         history = [sorted(activated_nodes)]
+        edges_by_step: list[list[tuple[int, int]]] = []
 
-        for _ in range(steps):
+        for step_index in range(steps):
             active_sources = np.flatnonzero(activation > 0)
             if active_sources.size == 0:
                 break
@@ -181,6 +223,12 @@ class SphereBrain:
                 break
 
             ranked = sorted(candidates.items(), key=lambda item: item[1][0], reverse=True)
+            ranked, assist_trace = self.structural_assist.reorder(
+                self, ranked, history, edges_by_step
+            )
+            assist_trace["step"] = step_index
+            self.last_structural_assist_trace.append(assist_trace)
+
             remaining_capacity = max(0, self.max_total_active_nodes - len(activated_nodes))
             step_limit = min(self.max_active_per_step, len(ranked))
 
@@ -201,6 +249,7 @@ class SphereBrain:
                 break
 
             next_activation = np.zeros(self.node_count, dtype=float)
+            accepted_edges: list[tuple[int, int]] = []
             for target, (value, source) in selected:
                 if noise:
                     value += float(self.rng.normal(0.0, noise))
@@ -208,6 +257,7 @@ class SphereBrain:
                 if value < threshold:
                     continue
                 next_activation[target] = max(next_activation[target], value)
+                accepted_edges.append((source, target))
                 traversed_edges.add(tuple(sorted((source, target))))
 
             active_now = np.flatnonzero(next_activation > 0).tolist()
@@ -216,6 +266,7 @@ class SphereBrain:
 
             activated_nodes.update(active_now)
             history.append(active_now)
+            edges_by_step.append(accepted_edges)
             activation = next_activation
 
             if len(activated_nodes) >= self.max_total_active_nodes:
@@ -341,6 +392,12 @@ class SphereBrain:
             "max_branches": self.max_branches,
             "max_active_per_step": self.max_active_per_step,
             "max_total_active_nodes": self.max_total_active_nodes,
+            "structural_assist_enabled": self.structural_assist_enabled,
+            "structural_gain": self.structural_gain,
+            "structural_tie_margin": self.structural_tie_margin,
+            "structural_near_zero_margin": self.structural_near_zero_margin,
+            "structural_relative_cap_ratio": self.structural_relative_cap_ratio,
+            "structural_absolute_cap": self.structural_absolute_cap,
             "positions": self.positions.tolist(),
             "adjacency": self.adjacency.astype(int).tolist(),
             "weights": self.weights.tolist(),
@@ -363,6 +420,12 @@ class SphereBrain:
             max_branches=data.get("max_branches", 2),
             max_active_per_step=data.get("max_active_per_step", 72),
             max_total_active_nodes=data.get("max_total_active_nodes", 100),
+            structural_assist_enabled=data.get("structural_assist_enabled", False),
+            structural_gain=data.get("structural_gain", 0.02),
+            structural_tie_margin=data.get("structural_tie_margin", 0.0025),
+            structural_near_zero_margin=data.get("structural_near_zero_margin", 1e-8),
+            structural_relative_cap_ratio=data.get("structural_relative_cap_ratio", 0.35),
+            structural_absolute_cap=data.get("structural_absolute_cap", 5e-5),
         )
         brain.positions = np.asarray(data["positions"], dtype=float)
         brain.adjacency = np.asarray(data["adjacency"], dtype=bool)
