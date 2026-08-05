@@ -1,17 +1,37 @@
 @echo off
+chcp 65001 >nul
 setlocal
-cd /d %~dp0
+cd /d "%~dp0"
 
-if not exist .venv\Scripts\python.exe (
-  echo .venv が見つかりません。先に環境を準備してください。
+set "PYTHON_CMD="
+
+if exist ".venv\Scripts\python.exe" (
+  set "PYTHON_CMD=.venv\Scripts\python.exe"
+) else (
+  where py >nul 2>nul
+  if not errorlevel 1 set "PYTHON_CMD=py -3"
+)
+
+if not defined PYTHON_CMD (
+  where python >nul 2>nul
+  if not errorlevel 1 set "PYTHON_CMD=python"
+)
+
+if not defined PYTHON_CMD (
+  echo Python was not found.
+  echo Install Python or create .venv, then run this file again.
   pause
   exit /b 1
 )
 
-.venv\Scripts\python.exe experiments\run_structural_grid_puzzle_v1.py
+echo Starting Structural Grid Puzzle v1...
+%PYTHON_CMD% experiments\run_structural_grid_puzzle_v1.py
+
 if errorlevel 1 (
   echo.
-  echo 実行中にエラーが発生しました。
+  echo The program stopped with an error.
+  echo Copy the error text shown above and send it to ChatGPT.
   pause
 )
+
 endlocal
