@@ -6,7 +6,7 @@ from typing import Sequence
 import numpy as np
 
 from structural_observer import StructuralEpisode
-from structural_working_state import StructuralWorkingStateV2, WorkingStateV2Config
+from structural_working_state_v2 import StructuralWorkingStateV2, WorkingStateV2Config
 
 
 @dataclass(frozen=True)
@@ -32,13 +32,15 @@ class StructuralPropagation:
     def propagate(
         self,
         episode: StructuralEpisode,
+        terminal_node: int,
         common_suffix_start: int,
         candidate_count: int = 2,
         candidate_order: Sequence[int] | None = None,
     ) -> dict:
-        working = StructuralWorkingStateV2(
+        worker = StructuralWorkingStateV2(
             WorkingStateV2Config(enabled=self.config.enabled)
-        ).run(episode, common_suffix_start=common_suffix_start)
+        )
+        working = worker._run(episode, terminal_node, common_suffix_start)
         context = np.asarray(working["terminal_structural_state"], dtype=float)
         directions = self._candidate_directions(candidate_count, context.size)
 
@@ -50,11 +52,12 @@ class StructuralPropagation:
         baseline = np.zeros(candidate_count, dtype=float)
         if self.config.enabled and context.size:
             modulation = self.config.structural_gain * (ordered @ context)
-            modulation -= modulation.mean()  # no global excitation and no preferred answer
+            modulation -= modulation.mean()
         else:
             modulation = np.zeros(candidate_count, dtype=float)
 
-        logits = (baseline + modulation) / max(1e-9, self.config.temperature)
+        final_logits = baseline + modulation
+        logits = final_logits / max(1e-9, self.config.temperature)
         logits -= logits.max()
         probabilities = np.exp(logits)
         probabilities /= probabilities.sum()
@@ -70,7 +73,7 @@ class StructuralPropagation:
             "terminal_structural_state": context.tolist(),
             "baseline_logits": baseline.tolist(),
             "structural_modulation": modulation.tolist(),
-            "final_logits": (baseline + modulation).tolist(),
+            "final_logits": final_logits.tolist(),
             "branch_probabilities": probabilities.tolist(),
             "probability_spread": float(probabilities.max() - probabilities.min()),
             "working_state": working,
