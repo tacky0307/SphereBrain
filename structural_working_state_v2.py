@@ -59,8 +59,16 @@ class StructuralWorkingStateV2:
         self.observer = StructuralObserver()
 
     def run_case(self, case: ControlledCase) -> dict:
-        left = self._run(case.left, case.terminal_node_left, case.common_suffix_start)
-        right = self._run(case.right, case.terminal_node_right, case.common_suffix_start)
+        left = self.run_episode(
+            case.left,
+            terminal_node=case.terminal_node_left,
+            common_suffix_start=case.common_suffix_start,
+        )
+        right = self.run_episode(
+            case.right,
+            terminal_node=case.terminal_node_right,
+            common_suffix_start=case.common_suffix_start,
+        )
         left_state = left["terminal_state"]
         right_state = right["terminal_state"]
         return {
@@ -75,6 +83,29 @@ class StructuralWorkingStateV2:
                 "structural_distance": self.distance(left["terminal_structural_state"], right["terminal_structural_state"]),
             },
         }
+
+    def run_episode(
+        self,
+        episode: StructuralEpisode,
+        terminal_node: int | None = None,
+        common_suffix_start: int = 0,
+    ) -> dict:
+        """Run one episode and return its ephemeral structural state.
+
+        `terminal_node` defaults to the first node active in the final step.
+        This public wrapper is used by propagation experiments; `_run` remains
+        the implementation detail.
+        """
+        if not episode.steps or not episode.steps[-1]:
+            raise ValueError("episode must contain at least one terminal node")
+        resolved_terminal = (
+            int(terminal_node)
+            if terminal_node is not None
+            else int(episode.steps[-1][0])
+        )
+        if common_suffix_start < 0 or common_suffix_start >= len(episode.steps):
+            raise ValueError("common_suffix_start is outside the episode")
+        return self._run(episode, resolved_terminal, common_suffix_start)
 
     def _run(self, episode: StructuralEpisode, terminal_node: int, suffix_start: int) -> dict:
         state = np.zeros(len(self.CONTEXT_NAMES), dtype=float)
