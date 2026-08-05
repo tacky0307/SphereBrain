@@ -71,7 +71,10 @@ class StructuralPropagationV2:
         worker = StructuralWorkingStateV2(
             WorkingStateV2Config(enabled=self.config.enabled)
         )
-        working = worker.run(episode, common_suffix_start=common_suffix_start)
+        working = worker.run_episode(
+            episode,
+            common_suffix_start=common_suffix_start,
+        )
         context = np.asarray(working["terminal_structural_state"], dtype=float)
 
         local_logits = np.asarray(
