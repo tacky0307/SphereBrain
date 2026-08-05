@@ -59,7 +59,7 @@ class CoreStateObserver:
 
         route_edges = {tuple(sorted(edge)) for edge in result.traversed_edges}
         relation_summary = self._relation_summary(node_ids, relation_matrix, route_edges)
-        state_vector = self._pool_state(normalized, contextualized, relation_matrix)
+        state_vector = self._pool_state(raw_features, normalized, contextualized, relation_matrix)
         temporal = self._temporal_summary(result, node_ids)
 
         return {
@@ -164,11 +164,14 @@ class CoreStateObserver:
 
     @staticmethod
     def _pool_state(
+        raw_features: np.ndarray,
         normalized: np.ndarray,
         contextualized: np.ndarray,
         relation_matrix: np.ndarray,
     ) -> np.ndarray:
-        mean_raw = normalized.mean(axis=0)
+        raw_mean = raw_features.mean(axis=0)
+        raw_std = raw_features.std(axis=0)
+        normalized_std = normalized.std(axis=0)
         mean_context = contextualized.mean(axis=0)
         max_context = contextualized.max(axis=0)
         diagonal = float(np.trace(relation_matrix) / max(1, relation_matrix.shape[0]))
@@ -185,7 +188,14 @@ class CoreStateObserver:
             ],
             dtype=float,
         )
-        return np.concatenate([mean_raw, mean_context, max_context, relation_stats])
+        return np.concatenate([
+            raw_mean,
+            raw_std,
+            normalized_std,
+            mean_context,
+            max_context,
+            relation_stats,
+        ])
 
     @staticmethod
     def _relation_summary(
