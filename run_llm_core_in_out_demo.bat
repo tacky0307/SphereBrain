@@ -2,9 +2,9 @@
 setlocal
 cd /d "%~dp0"
 
-echo SphereBrain IN-Core-OUT sentence formation demo
+echo SphereBrain Core literal vs LLM expressive OUT demo
 start "" http://127.0.0.1:5082
-python experiments\run_llm_core_in_out_sentence_demo.py
+python experiments\run_llm_core_in_out_dual_demo.py
 
 if errorlevel 1 (
   echo.
