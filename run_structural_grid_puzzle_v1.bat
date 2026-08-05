@@ -24,8 +24,8 @@ if not defined PYTHON_CMD (
   exit /b 1
 )
 
-echo Starting Structural Grid Puzzle v1...
-%PYTHON_CMD% experiments\run_structural_grid_puzzle_v1.py
+echo Starting Structural Grid Puzzle v2...
+%PYTHON_CMD% experiments\run_structural_grid_puzzle_v2.py
 
 if errorlevel 1 (
   echo.
