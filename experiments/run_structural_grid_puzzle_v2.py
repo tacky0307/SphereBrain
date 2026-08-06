@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import sys
 import threading
 import webbrowser
+from pathlib import Path
 
 from waitress import serve
 
-from experiments import run_structural_grid_puzzle_v1 as v1
+# This script is executed directly from the experiments directory, so import
+# the sibling v1 module directly instead of requiring experiments as a package.
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+import run_structural_grid_puzzle_v1 as v1
 
 
 # Historical puzzle notation uses E as the end point.
