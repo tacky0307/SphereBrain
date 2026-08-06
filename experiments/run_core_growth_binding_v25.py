@@ -18,13 +18,16 @@ if str(ROOT) not in sys.path:
 import run_core_growth_binding_v3 as v3
 
 HOST = "127.0.0.1"
-START_PORT = 5060
+START_PORT = 5070
 OUT = ROOT / "data" / "core_growth_binding_v25" / "results"
 POSITIONS = list(v3.POSITIONS)
+CHROME_UNSAFE_PORTS = {5060, 5061}
 
 
 def choose_port(start: int) -> int:
     for port in range(start, start + 40):
+        if port in CHROME_UNSAFE_PORTS:
+            continue
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
                 sock.bind((HOST, port))
