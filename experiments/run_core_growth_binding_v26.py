@@ -57,20 +57,43 @@ def jaccard(a: set, b: set) -> float:
 def run_position(position: str) -> dict:
     brain = copy.deepcopy(v3.base.CORE)
     source_nodes = [int(x) for x in v3.position_nodes(position)]
-    result = v3.propagate(brain, source_nodes, learn=False, steps=STEPS)
-    history = [set(int(x) for x in step) for step in result["activation_history"]]
-    final = np.asarray(result["final_activation"], dtype=float)
+
+    # v3.propagate() と同じ初期条件を保ちながら、生の SignalResult を受け取る。
+    original_initial = brain._initial_activation
+
+    def initial(source_nodes_arg, context_nodes):
+        sources = [int(x) for x in source_nodes_arg]
+        activation = np.zeros(brain.node_count, dtype=float)
+        for node in sources:
+            activation[node] = 1.0
+        return sources, activation
+
+    brain._initial_activation = initial
+    try:
+        result = brain.propagate(
+            source_nodes,
+            context_nodes=None,
+            steps=STEPS,
+            threshold=0.18,
+            noise=0.0,
+            learn=False,
+        )
+    finally:
+        brain._initial_activation = original_initial
+
+    history = [set(int(x) for x in step) for step in result.activation_history]
+    final = np.asarray(result.final_activation, dtype=float)
     return {
         "position": position,
         "source_nodes": source_nodes,
-        "activated_nodes": sorted(int(x) for x in result["activated_nodes"]),
-        "traversed_edges": [list(edge_key(a, b)) for a, b in result["traversed_edges"]],
+        "activated_nodes": sorted(int(x) for x in result.activated_nodes),
+        "traversed_edges": [list(edge_key(a, b)) for a, b in result.traversed_edges],
         "activation_history": [sorted(step) for step in history],
         "history_sets": history,
         "final_activation": final,
         "final_nonzero": sorted(int(x) for x in np.flatnonzero(final > 0)),
-        "activated_node_count": len(result["activated_nodes"]),
-        "traversed_edge_count": len(result["traversed_edges"]),
+        "activated_node_count": len(result.activated_nodes),
+        "traversed_edge_count": len(result.traversed_edges),
         "depth": max(0, len(history) - 1),
     }
 
@@ -199,7 +222,7 @@ def observe() -> dict:
 app = Flask(__name__)
 
 PAGE = r'''<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Core Growth Binding v26</title><style>
-:root{--panel:#17253c;--panel2:#0c1727;--line:#385273;--text:#f3f7ff;--muted:#aebbd0;--orange:#ffad67;--green:#91efb0;--red:#ff9fa7;--blue:#8ed8ff}*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#07101d,#12213a);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1550px;margin:auto;padding:32px 22px 70px}h1{font-size:clamp(34px,5vw,60px);margin:0}.lead{color:var(--muted);font-size:18px;line-height:1.6}.panel{background:rgba(23,37,60,.96);border:1px solid var(--line);border-radius:22px;padding:24px;margin-top:20px}.controls{display:flex;justify-content:flex-end}button{padding:14px 20px;border-radius:12px;border:1px solid #466486;background:var(--orange);color:#101722;font-size:16px;font-weight:900;cursor:pointer}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.metric{background:var(--panel2);padding:16px;border-radius:14px}.metric b{display:block;font-size:21px;margin-top:6px}.good{color:var(--green)}.warn{color:var(--red)}.raw{white-space:pre-wrap;max-height:900px;overflow:auto;background:#07111d;padding:17px;border-radius:14px;color:#c7d5e9}@media(max-width:950px){.metrics{grid-template-columns:1fr}}</style></head><body><main><h1>Core Growth Binding v26</h1><p class="lead">左・中央・右の位置単独入力を、入力Node・Step活動・通過Edge・最終activationまで比較し、位置表現がCore内で分離しているかを診断する。</p><section class="panel"><div class="controls"><button id="run">位置入力を比較</button></div></section><section class="panel"><h2>主要結果</h2><div id="metrics" class="metrics"></div></section><section class="panel"><h2>Core生データ</h2><pre id="raw" class="raw">まだ診断していません。</pre></section></main><script>
+:root{--panel:#17253c;--panel2:#0c1727;--line:#385273;--text:#f3f7ff;--muted:#aebbd0;--orange:#ffad67;--green:#91efb0;--red:#ff9fa7}*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#07101d,#12213a);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1550px;margin:auto;padding:32px 22px 70px}h1{font-size:clamp(34px,5vw,60px);margin:0}.lead{color:var(--muted);font-size:18px;line-height:1.6}.panel{background:rgba(23,37,60,.96);border:1px solid var(--line);border-radius:22px;padding:24px;margin-top:20px}.controls{display:flex;justify-content:flex-end}button{padding:14px 20px;border-radius:12px;border:1px solid #466486;background:var(--orange);color:#101722;font-size:16px;font-weight:900;cursor:pointer}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.metric{background:var(--panel2);padding:16px;border-radius:14px}.metric b{display:block;font-size:21px;margin-top:6px}.good{color:var(--green)}.warn{color:var(--red)}.raw{white-space:pre-wrap;max-height:900px;overflow:auto;background:#07111d;padding:17px;border-radius:14px;color:#c7d5e9}@media(max-width:950px){.metrics{grid-template-columns:1fr}}</style></head><body><main><h1>Core Growth Binding v26</h1><p class="lead">左・中央・右の位置単独入力を、入力Node・Step活動・通過Edge・最終activationまで比較し、位置表現がCore内で分離しているかを診断する。</p><section class="panel"><div class="controls"><button id="run">位置入力を比較</button></div></section><section class="panel"><h2>主要結果</h2><div id="metrics" class="metrics"></div></section><section class="panel"><h2>Core生データ</h2><pre id="raw" class="raw">まだ診断していません。</pre></section></main><script>
 function f(x){return Number(x).toFixed(6)}document.getElementById('run').addEventListener('click',async()=>{const res=await fetch('/api/observe',{method:'POST'});const d=await res.json(),s=d.summary,p=d.pairwise;const cards=Object.values(p).map(x=>`<div class="metric">${x.pair} 入力Jaccard<b>${f(x.source_node_jaccard)}</b></div><div class="metric">${x.pair} Node Jaccard<b>${f(x.activated_node_jaccard)}</b></div><div class="metric">${x.pair} Edge Jaccard<b>${f(x.edge_jaccard)}</b></div><div class="metric">${x.pair} 最終距離<b>${f(x.final_activation_cosine_distance)}</b></div>`).join('');document.getElementById('metrics').innerHTML=cards+`<div class="metric">平均入力Jaccard<b>${f(s.mean_source_jaccard)}</b></div><div class="metric">平均Node Jaccard<b>${f(s.mean_activated_node_jaccard)}</b></div><div class="metric">平均Edge Jaccard<b>${f(s.mean_edge_jaccard)}</b></div><div class="metric">全経路分離<b class="${s.all_routes_distinct?'good':'warn'}">${s.all_routes_distinct?'YES':'NO'}</b></div><div class="metric">最終状態分離<b class="${s.all_final_states_distinct?'good':'warn'}">${s.all_final_states_distinct?'YES':'NO'}</b></div><div class="metric">brain.json<b class="good">${d.brain_file_unchanged?'不変':'変化'}</b></div>`;document.getElementById('raw').textContent=JSON.stringify(d,null,2)});
 </script></body></html>'''
 
