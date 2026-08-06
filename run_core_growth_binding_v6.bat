@@ -20,7 +20,7 @@ if not defined PYTHON_CMD (
 )
 
 echo Starting Core Growth Binding v6...
-%PYTHON_CMD% experiments\run_core_growth_binding_v6.py
+%PYTHON_CMD% experiments\run_core_growth_binding_v6_portsafe.py
 if errorlevel 1 (
   echo.
   echo The program stopped with an error.
