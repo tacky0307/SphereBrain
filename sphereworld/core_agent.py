@@ -11,6 +11,21 @@ from brain import SphereBrain
 
 ACTION_ORDER = ("N", "E", "S", "W", "STAY")
 OUTCOMES = ("good", "neutral", "bad")
+SENSE_VALUES = ("empty", "food", "danger", "wall")
+ENERGY_VALUES = ("low", "mid", "high")
+
+
+def _anchor_labels() -> tuple[str, ...]:
+    labels: list[str] = []
+    for channel in ("N", "E", "S", "W"):
+        labels.extend(f"sense:{channel}:{value}" for value in SENSE_VALUES)
+    labels.extend(f"sense:ENERGY:{value}" for value in ENERGY_VALUES)
+    labels.extend(f"action:{action}" for action in ACTION_ORDER)
+    labels.extend(f"outcome:{outcome}" for outcome in OUTCOMES)
+    return tuple(sorted(labels))
+
+
+ANCHOR_LABELS = _anchor_labels()
 
 
 @dataclass(frozen=True)
@@ -38,7 +53,7 @@ class CoreAgent:
         self.brain = brain
         self.brain_path = Path(brain_path)
         self.rng = np.random.default_rng(seed)
-        self._anchor_cache: dict[str, int] = {}
+        self._anchor_map = self._build_anchor_map()
         self.last_decision: Decision | None = None
 
     @classmethod
@@ -63,18 +78,26 @@ class CoreAgent:
             )
         return cls(brain=brain, brain_path=path, seed=seed + 1000)
 
-    def _anchor(self, label: str) -> int:
-        cached = self._anchor_cache.get(label)
-        if cached is not None:
-            return cached
+    def _build_anchor_map(self) -> dict[str, int]:
+        if len(ANCHOR_LABELS) > self.brain.node_count:
+            raise ValueError("Core does not have enough nodes for SphereWorld anchors")
 
-        digest = hashlib.sha256(("sphereworld:v0.1:" + label).encode("utf-8")).digest()
-        candidate = int.from_bytes(digest[:8], "big") % self.brain.node_count
-        used = set(self._anchor_cache.values())
-        while candidate in used:
-            candidate = (candidate + 1) % self.brain.node_count
-        self._anchor_cache[label] = candidate
-        return candidate
+        mapping: dict[str, int] = {}
+        used: set[int] = set()
+        for label in ANCHOR_LABELS:
+            digest = hashlib.sha256(("sphereworld:v0.1:" + label).encode("utf-8")).digest()
+            candidate = int.from_bytes(digest[:8], "big") % self.brain.node_count
+            while candidate in used:
+                candidate = (candidate + 1) % self.brain.node_count
+            mapping[label] = candidate
+            used.add(candidate)
+        return mapping
+
+    def _anchor(self, label: str) -> int:
+        try:
+            return self._anchor_map[label]
+        except KeyError as exc:
+            raise ValueError(f"unknown SphereWorld channel: {label}") from exc
 
     def sensor_nodes(self, senses: dict[str, str]) -> list[int]:
         # Numeric identity only: the Core never receives the label meaning itself.
