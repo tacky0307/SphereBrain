@@ -8,6 +8,7 @@ import hashlib
 import numpy as np
 
 from core_experience_state import CoreExperienceState
+from core_native_learning import CoreNativeLearningState
 from structural_core_assist import StructuralAssistConfig, StructuralCoreAssist
 
 
@@ -70,9 +71,12 @@ class SphereBrain:
         )
         self.last_structural_assist_trace: list[dict] = []
 
-        # Native experience-derived Core state. It is intentionally behavior-neutral:
-        # propagation, learning and structural assistance do not read it.
+        # Native experience-derived Core state.
         self.experience_state = CoreExperienceState()
+
+        # Primary Native Learning state validated by v73-v80B:
+        # Temporal Credit + Homeostatic Consolidation.
+        self.learning_state = CoreNativeLearningState()
 
         self.positions = self._generate_points_in_sphere(node_count)
         self.adjacency = np.zeros((node_count, node_count), dtype=bool)
@@ -91,6 +95,29 @@ class SphereBrain:
 
     def clear_experience_state(self) -> None:
         self.experience_state.clear()
+
+    def snapshot_learning_state(self) -> dict:
+        return self.learning_state.snapshot()
+
+    def clear_learning_state(self) -> None:
+        self.learning_state.clear()
+
+    def observe_learning_episode(
+        self,
+        transitions,
+        *,
+        success: bool,
+        expected_conditions,
+        motif: str = "native_learning",
+    ) -> dict:
+        """Apply Primary Core Native Learning to one externally observed episode."""
+        return self.learning_state.observe_episode(
+            self,
+            transitions,
+            success=success,
+            expected_conditions=expected_conditions,
+            motif=motif,
+        )
 
     def set_structural_assist(self, enabled: bool) -> None:
         """Enable or disable bounded structural assistance at runtime."""
@@ -247,7 +274,6 @@ class SphereBrain:
             remaining_capacity = max(0, self.max_total_active_nodes - len(activated_nodes))
             step_limit = min(self.max_active_per_step, len(ranked))
 
-            # 既に使われたノードも再活性化できるが、新規ノード総数は上限を越えない。
             selected: list[tuple[int, tuple[float, int]]] = []
             new_nodes_selected = 0
             for target, payload in ranked:
@@ -285,7 +311,6 @@ class SphereBrain:
             activation = next_activation
 
             if len(activated_nodes) >= self.max_total_active_nodes:
-                # 上限到達後は既存集合内であと1段だけ収束させる。
                 break
 
         if learn and traversed_edges:
@@ -414,6 +439,7 @@ class SphereBrain:
             "structural_relative_cap_ratio": self.structural_relative_cap_ratio,
             "structural_absolute_cap": self.structural_absolute_cap,
             "experience_state": self.experience_state.snapshot(),
+            "learning_state": self.learning_state.snapshot(),
             "positions": self.positions.tolist(),
             "adjacency": self.adjacency.astype(int).tolist(),
             "weights": self.weights.tolist(),
@@ -449,4 +475,5 @@ class SphereBrain:
         brain.usage = np.asarray(data["usage"], dtype=int)
         brain.node_usage = np.asarray(data.get("node_usage", [0] * brain.node_count), dtype=int)
         brain.experience_state.replace_from_mapping(data.get("experience_state"))
+        brain.learning_state.replace_from_mapping(data.get("learning_state"))
         return brain
