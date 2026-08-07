@@ -7,6 +7,7 @@ import json
 import hashlib
 import numpy as np
 
+from core_experience_state import CoreExperienceState
 from structural_core_assist import StructuralAssistConfig, StructuralCoreAssist
 
 
@@ -69,6 +70,10 @@ class SphereBrain:
         )
         self.last_structural_assist_trace: list[dict] = []
 
+        # Native experience-derived Core state. It is intentionally behavior-neutral:
+        # propagation, learning and structural assistance do not read it.
+        self.experience_state = CoreExperienceState()
+
         self.positions = self._generate_points_in_sphere(node_count)
         self.adjacency = np.zeros((node_count, node_count), dtype=bool)
         self.weights = np.zeros((node_count, node_count), dtype=float)
@@ -76,6 +81,16 @@ class SphereBrain:
         self.node_usage = np.zeros(node_count, dtype=int)
 
         self._connect_nearest_nodes()
+
+    def snapshot_experience_state(self) -> dict:
+        return self.experience_state.snapshot()
+
+    def update_experience_state(self, **kwargs) -> None:
+        """Update the native experience state without affecting propagation."""
+        self.experience_state.update_profile(**kwargs)
+
+    def clear_experience_state(self) -> None:
+        self.experience_state.clear()
 
     def set_structural_assist(self, enabled: bool) -> None:
         """Enable or disable bounded structural assistance at runtime."""
@@ -398,6 +413,7 @@ class SphereBrain:
             "structural_near_zero_margin": self.structural_near_zero_margin,
             "structural_relative_cap_ratio": self.structural_relative_cap_ratio,
             "structural_absolute_cap": self.structural_absolute_cap,
+            "experience_state": self.experience_state.snapshot(),
             "positions": self.positions.tolist(),
             "adjacency": self.adjacency.astype(int).tolist(),
             "weights": self.weights.tolist(),
@@ -432,4 +448,5 @@ class SphereBrain:
         brain.weights = np.asarray(data["weights"], dtype=float)
         brain.usage = np.asarray(data["usage"], dtype=int)
         brain.node_usage = np.asarray(data.get("node_usage", [0] * brain.node_count), dtype=int)
+        brain.experience_state.replace_from_mapping(data.get("experience_state"))
         return brain
